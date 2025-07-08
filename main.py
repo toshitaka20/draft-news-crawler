@@ -17,7 +17,7 @@ KEYWORDS = ["ドラフト", "スカウト", "コメント", "視察"]
 if not os.path.exists('credentials.json'):
     google_creds = os.environ.get('GOOGLE_CREDENTIALS')
     if google_creds:
-        with open('credentials.json', 'w') as f:
+        with open('credentials.json', 'w', encoding='utf-8') as f:
             f.write(google_creds)
 
 # Google Sheets認証とシート準備
