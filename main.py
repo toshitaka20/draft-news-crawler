@@ -20,14 +20,6 @@ if not os.path.exists('credentials.json'):
         with open('credentials.json', 'w', encoding='utf-8') as f:
             f.write(google_creds)
 
-# デバッグ用: credentials.jsonの先頭10行だけ出力（機密情報に注意！）
-if os.path.exists('credentials.json'):
-    with open('credentials.json', 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-        print('--- credentials.json 先頭10行（デバッグ用・機密情報注意）---')
-        print(''.join(lines[:10]))
-        print('--- end ---')
-
 # Google Sheets認証とシート準備
 def setup_sheet():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
