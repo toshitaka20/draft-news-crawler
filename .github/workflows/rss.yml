@@ -20,8 +20,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Set up credentials.json
-        run: echo "${{ secrets.GOOGLE_CREDENTIALS }}" > credentials.json
+      - name: Decode credentials.json from base64
+        run: echo "${{ secrets.GOOGLE_CREDENTIALS_BASE64 }}" | base64 -d > credentials.json
 
       - name: Run main.py
         run: python main.py
