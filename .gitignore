@@ -1,6 +1,7 @@
 credentials.json
 credentials.vertexai.json
 .env
+sql_output/
 
 # Python
 __pycache__/

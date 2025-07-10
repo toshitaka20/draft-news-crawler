@@ -11,6 +11,7 @@ from scraper.sanspo import fetch_all_sanspo_articles
 from scraper.chunichi import fetch_all_chunichi_articles
 from ai.gemini import process_articles_with_ai
 from sheets.google_sheets import update_sheets, get_existing_urls_by_source
+from database.supabase_client import generate_scout_comment_sql_with_resolved_ids
 from utils import deduplicate_articles
 
 def main():
@@ -79,9 +80,30 @@ def main():
             a['scout_comments'] = "キーワードなし"
             a['scout_rows'] = []
         
-        # 9. 全記事をマージしてGoogle Sheets更新
+        # 9. 全記事をマージ
         all_processed = processed_keyword_articles + no_keyword_articles
-        print("\n8. Google Sheets更新中...")
+        
+        # 10. スカウトコメントをSupabase用SQLに変換
+        print("\n9. スカウトコメントSQL生成中...")
+        all_scout_rows = []
+        for article in all_processed:
+            scout_rows = article.get('scout_rows', [])
+            if scout_rows:
+                all_scout_rows.extend(scout_rows)
+        
+        if all_scout_rows:
+            print(f"スカウトコメント総数: {len(all_scout_rows)}件")
+            try:
+                sql_file = generate_scout_comment_sql_with_resolved_ids(all_scout_rows)
+                print(f"✅ スカウトコメントSQL生成完了: {sql_file}")
+            except Exception as e:
+                print(f"⚠️ スカウトコメントSQL生成エラー: {e}")
+                print("Googleスプレッドシートの更新のみ実行します...")
+        else:
+            print("スカウトコメントが見つかりませんでした。")
+        
+        # 11. Google Sheets更新
+        print("\n10. Google Sheets更新中...")
         update_sheets(all_processed)
         
         print(f"\n=== 処理完了 ===")
@@ -89,13 +111,31 @@ def main():
         
         # 結果サマリー
         sources = {}
+        scout_comment_count = 0
         for article in all_processed:
             source = article.get('source', '不明')
             sources[source] = sources.get(source, 0) + 1
+            scout_comment_count += len(article.get('scout_rows', []))
         
         print("\n=== ソース別記事数 ===")
         for source, count in sources.items():
             print(f"{source}: {count}件")
+        
+        print(f"\n=== スカウトコメント統計 ===")
+        print(f"スカウトコメント総数: {scout_comment_count}件")
+        
+        # スカウトコメントの内訳
+        if scout_comment_count > 0:
+            scout_teams = {}
+            for article in all_processed:
+                for scout_row in article.get('scout_rows', []):
+                    if len(scout_row) >= 4:
+                        team = scout_row[3]  # スカウト球団名
+                        scout_teams[team] = scout_teams.get(team, 0) + 1
+            
+            print("\n=== 球団別スカウトコメント数 ===")
+            for team, count in sorted(scout_teams.items()):
+                print(f"{team}: {count}件")
         
     except Exception as e:
         print(f"[エラー] メイン処理失敗: {e}")
