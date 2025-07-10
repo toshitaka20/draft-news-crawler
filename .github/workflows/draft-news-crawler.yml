@@ -32,6 +32,9 @@ jobs:
         run: python main_new.py
         env:
           GOOGLE_GENAI_API_KEY: ${{ secrets.GOOGLE_GENAI_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
 
       - name: Upload credentials.json as artifact (for debugging)
         uses: actions/upload-artifact@v4

@@ -35,10 +35,22 @@
 
 2. **GOOGLE_GENAI_API_KEY**: Gemini API認証キー
 
+3. **SUPABASE_URL**: SupabaseプロジェクトのURL
+   ```
+   https://your-project-id.supabase.co
+   ```
+
+4. **SUPABASE_KEY**: Supabaseのanon public key
+
+5. **GOOGLE_SHEETS_ID**: Google SheetsのID
+   ```
+   スプレッドシートURLの /d/ と /edit の間の部分
+   ```
+
 ### 設定手順
 
 1. GitHubリポジトリのSettings > Secrets and variables > Actions
-2. 上記の2つのSecretsを追加
+2. 上記の5つのSecretsを追加
 3. ワークフローは毎日9:00、15:00、21:00（JST）に自動実行
 4. 手動実行も可能（Actionsタブから）
 
