@@ -123,10 +123,21 @@ def update_sheets(articles: List[Dict[str, Any]]):
             if article_url and article_url not in existing_urls:
                 new_rows.append(row)
         
-        # 新しい記事のみを追加
+        # 新しい記事のみを追加（バッチ処理で分割）
         if new_rows:
-            worksheet.append_rows(new_rows)
-            print(f"[DEBUG] 新しい記事を{len(new_rows)}件追加しました")
+            BATCH_SIZE = 50  # 1回に追加する行数
+            try:
+                for i in range(0, len(new_rows), BATCH_SIZE):
+                    batch = new_rows[i:i+BATCH_SIZE]
+                    worksheet.append_rows(batch)
+                    print(f"[DEBUG] バッチ {i//BATCH_SIZE + 1}: {len(batch)}件追加")
+                    # バッチ間で少し待機（API負荷軽減）
+                    import time
+                    time.sleep(0.5)
+                print(f"[DEBUG] 新しい記事を{len(new_rows)}件追加しました")
+            except Exception as e:
+                print(f"[警告] 記事追加中にエラーが発生しました: {e}")
+                print("残りの記事は次回実行時に追加されます")
         else:
             print("[DEBUG] 新しい記事はありませんでした")
         
@@ -154,7 +165,19 @@ def update_sheets(articles: List[Dict[str, Any]]):
                     deduped_scout_rows.append(processed_row)
             # --- deduplication end ---
             scout_sheet = setup_scout_sheet()
-            scout_sheet.append_rows(deduped_scout_rows)
+            if deduped_scout_rows:
+                BATCH_SIZE = 50  # 1回に追加する行数
+                try:
+                    for i in range(0, len(deduped_scout_rows), BATCH_SIZE):
+                        batch = deduped_scout_rows[i:i+BATCH_SIZE]
+                        scout_sheet.append_rows(batch)
+                        print(f"[DEBUG] スカウトコメント バッチ {i//BATCH_SIZE + 1}: {len(batch)}件追加")
+                        # バッチ間で少し待機（API負荷軽減）
+                        import time
+                        time.sleep(0.5)
+                except Exception as e:
+                    print(f"[警告] スカウトコメント追加中にエラーが発生しました: {e}")
+                    print("残りのスカウトコメントは次回実行時に追加されます")
         
         print(f"[DEBUG] Google Sheets更新完了: {len(articles)}件の記事, {len(all_scout_rows)}件のスカウトコメント")
         
@@ -175,49 +198,61 @@ def update_sheets(articles: List[Dict[str, Any]]):
         raise 
 
 def get_existing_urls() -> set[str]:
-    """Google Sheetsから既存記事URLのセットを取得"""
+    """Google Sheetsから既存記事URLのセットを取得（ヘッダー名でマッピング）"""
     try:
         spreadsheet = setup_google_sheets()
         sheet = spreadsheet.worksheet("Articles")
         urls = set()
         values = sheet.get_all_values()
-        for row in values[1:]:  # 1行目はヘッダー
-            if len(row) > 4:
-                urls.add(row[4])
+        if not values or len(values) < 2:
+            return set()
+        header = values[0]
+        header_map = {name: idx for idx, name in enumerate(header)}
+        url_idx = header_map.get("URL")
+        if url_idx is None:
+            print("[既存URL取得エラー] 'URL'カラムが見つかりません")
+            return set()
+        for row in values[1:]:
+            if len(row) > url_idx:
+                urls.add(row[url_idx])
         return urls
     except Exception as e:
         print(f"[既存URL取得エラー] {e}")
-        return set() 
+        return set()
+
 
 def get_existing_urls_by_source(source: str) -> set[str]:
-    """特定媒体の既存記事URLのセットを取得"""
+    """特定媒体の既存記事URLのセットを取得（ヘッダー名でマッピング）"""
     try:
         spreadsheet = setup_google_sheets()
         sheet = spreadsheet.worksheet("Articles")
         urls = set()
         values = sheet.get_all_values()
-        
+        if not values or len(values) < 2:
+            return set()
+        header = values[0]
+        header_map = {name: idx for idx, name in enumerate(header)}
+        source_idx = header_map.get("ソース")
+        url_idx = header_map.get("URL")
+        if source_idx is None or url_idx is None:
+            print("[既存URL取得エラー] 'ソース'または'URL'カラムが見つかりません")
+            return set()
         # ソース名のマッピング
         source_mapping = {
             'スポニチ': ['スポニチ', 'sponichi'],
             'スポーツ報知': ['スポーツ報知', 'hochi', '報知'],
-            '日刊スポーツ': ['日刊スポーツ', 'nikkan', 'nikkan sports']
+            '日刊スポーツ': ['日刊スポーツ', 'nikkan', 'nikkan sports'],
+            'サンスポ': ['サンスポ', 'sanspo']
         }
-        
         target_sources = source_mapping.get(source, [source])
-        
-        for row in values[1:]:  # 1行目はヘッダー
-            if len(row) > 1:  # ソース列（2列目）とURL列（5列目）が存在
-                row_source = row[1].lower()  # ソース列
-                row_url = row[4] if len(row) > 4 else ''  # URL列
-                
-                # 該当媒体のURLかチェック
+        for row in values[1:]:
+            if len(row) > max(source_idx, url_idx):
+                row_source = row[source_idx].lower()
+                row_url = row[url_idx]
                 if any(target in row_source for target in target_sources) and row_url:
                     urls.add(row_url)
-        
         print(f"[DEBUG] {source}の既存URL数: {len(urls)}")
         return urls
-        
     except Exception as e:
         print(f"[既存URL取得エラー] {source}: {e}")
         return set() 
