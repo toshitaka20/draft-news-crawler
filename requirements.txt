@@ -3,3 +3,5 @@ beautifulsoup4
 requests
 gspread
 oauth2client
+google-generativeai
+google-auth

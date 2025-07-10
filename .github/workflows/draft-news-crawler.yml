@@ -1,0 +1,41 @@
+name: Draft News Crawler
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # JST 9:00（UTCで0:00）
+    - cron: '0 6 * * *'  # JST 15:00（UTCで6:00）
+    - cron: '0 12 * * *' # JST 21:00（UTCで12:00）
+  workflow_dispatch:  # 手動実行可能
+
+jobs:
+  run-crawler:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Decode Google Sheets credentials
+        run: echo "${{ secrets.GOOGLE_CREDENTIALS_BASE64 }}" | base64 -d > credentials.json
+
+      - name: Run draft news crawler
+        run: python main_new.py
+        env:
+          GOOGLE_GENAI_API_KEY: ${{ secrets.GOOGLE_GENAI_API_KEY }}
+
+      - name: Upload credentials.json as artifact (for debugging)
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: credentials-debug
+          path: credentials.json 
