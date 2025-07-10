@@ -62,13 +62,13 @@ def update_sheets(articles: List[Dict[str, Any]]):
     """
     try:
         spreadsheet = setup_google_sheets()
-        
-        # メインシートを取得（Articlesシートを使用）
         worksheet = spreadsheet.worksheet("Articles")
+        # デバッグ用: 書き込み先スプレッドシートとシート名を出力
+        print(f"[DEBUG] 書き込み先スプレッドシート: {spreadsheet.url}, シート名: {worksheet.title}")
         
         # ヘッダー行を準備
         headers = [
-            '実行日時', '日付', 'ソース', 'カテゴリ', 'タイトル', 'URL', 
+            '実行日時', '日付', 'ソース', 'カテゴリ', 'URL', 'タイトル', 
             '本文', 'キーワードフラグ', 'スカウトコメント'
         ]
         
@@ -86,16 +86,17 @@ def update_sheets(articles: List[Dict[str, Any]]):
             has_keywords = article.get('has_keywords', False)
             keyword_flag = 'TRUE' if has_keywords else 'FALSE'
             
+            # データ順序: URL（5番目）、タイトル（6番目）
             row = [
-                execution_time,
-                article.get('date', ''),
-                article.get('source', ''),
-                article.get('category', ''),
-                article.get('title', ''),
-                article.get('url', ''),
-                article.get('body', ''),
-                keyword_flag,
-                article.get('scout_comments', '')
+                execution_time,                  # 実行日時
+                article.get('date', ''),         # 日付
+                article.get('source', ''),       # ソース
+                article.get('category', ''),     # カテゴリ
+                article.get('url', ''),          # URL（5番目）
+                article.get('title', ''),        # タイトル（6番目）
+                article.get('body', ''),         # 本文
+                keyword_flag,                    # キーワードフラグ
+                article.get('scout_comments', '')# スカウトコメント
             ]
             rows.append(row)
             
@@ -110,39 +111,52 @@ def update_sheets(articles: List[Dict[str, Any]]):
         if not existing_values:
             worksheet.append_row(headers)
         
-        # URL列インデックスをヘッダー名から取得
-        url_idx = None
-        if existing_values:
-            header = existing_values[0]
-            header_map = {name: idx for idx, name in enumerate(header)}
-            url_idx = header_map.get("URL")
-        # 新しい記事のみを追加（重複チェック付き）
+        # 順番で重複チェック（URL列は5番目=インデックス4）
         existing_urls = set()
-        if url_idx is not None and len(existing_values) > 1:
-            for row in existing_values[1:]:
-                if len(row) > url_idx:
-                    existing_urls.add(row[url_idx])
-        # 新しい記事のみをフィルタリング
+        if len(existing_values) > 1:  # ヘッダー以外の行がある場合
+            for row in existing_values[1:]:  # ヘッダーを除く
+                if len(row) > 4:  # URL列（5番目）が存在
+                    existing_urls.add(row[4])  # URLを記録
+        
+        # 新しい記事のみをフィルタリング（URL列は5番目=インデックス4）
         new_rows = []
         for row in rows:
-            article_url = row[url_idx] if url_idx is not None and len(row) > url_idx else ''
+            article_url = row[4] if len(row) > 4 else ''  # URL列（5番目）
             if article_url and article_url not in existing_urls:
                 new_rows.append(row)
         
-        # 新しい記事のみを追加（バッチ処理で分割）
+        # 新しい記事のみを追加（効率的な範囲指定）
         if new_rows:
-            BATCH_SIZE = 50  # 1回に追加する行数
+            print(f"[DEBUG] 追加予定データ（new_rows）: {new_rows}")
+            for r in new_rows:
+                print(f"[DEBUG] 1行の長さ: {len(r)}, 内容: {r}")
+            print(f"[DEBUG] ヘッダーの長さ: {len(headers)}, 内容: {headers}")
+            
             try:
-                for i in range(0, len(new_rows), BATCH_SIZE):
-                    batch = new_rows[i:i+BATCH_SIZE]
-                    worksheet.append_rows(batch)
-                    print(f"[DEBUG] バッチ {i//BATCH_SIZE + 1}: {len(batch)}件追加")
-                    # バッチ間で少し待機（API負荷軽減）
-                    import time
-                    time.sleep(0.5)
+                # 現在の行数を取得
+                current_row_count = len(existing_values)
+                start_row = current_row_count + 1
+                
+                # A列からI列の範囲を指定して追加
+                end_row = start_row + len(new_rows) - 1
+                range_name = f"A{start_row}:I{end_row}"
+                print(f"[DEBUG] 追加範囲: {range_name}")
+                
+                # 範囲を指定してデータを追加
+                result = worksheet.update(range_name, new_rows)
+                print(f"[DEBUG] API結果: {result}")
                 print(f"[DEBUG] 新しい記事を{len(new_rows)}件追加しました")
+                
+                # 追加後の確認
+                print("[DEBUG] 追加後の確認...")
+                updated_values = worksheet.get_all_values()
+                print(f"[DEBUG] 現在の総行数: {len(updated_values)}")
+                if len(updated_values) > 0:
+                    print(f"[DEBUG] 最後の行: {updated_values[-1]}")
+                    
             except Exception as e:
                 print(f"[警告] 記事追加中にエラーが発生しました: {e}")
+                print(f"[DEBUG] エラーの詳細: {type(e).__name__}: {str(e)}")
                 print("残りの記事は次回実行時に追加されます")
         else:
             print("[DEBUG] 新しい記事はありませんでした")
