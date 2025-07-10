@@ -72,9 +72,10 @@ def update_sheets(articles: List[Dict[str, Any]]):
             '本文', 'キーワードフラグ', 'スカウトコメント'
         ]
         
-        # 実行日時を取得
-        from datetime import datetime
-        execution_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        # 実行日時をJSTで取得
+        from datetime import datetime, timedelta, timezone
+        JST = timezone(timedelta(hours=9), 'JST')
+        execution_time = datetime.now(JST).strftime('%Y-%m-%d %H:%M:%S')
         
         # データ行を準備
         rows = []
@@ -109,17 +110,22 @@ def update_sheets(articles: List[Dict[str, Any]]):
         if not existing_values:
             worksheet.append_row(headers)
         
+        # URL列インデックスをヘッダー名から取得
+        url_idx = None
+        if existing_values:
+            header = existing_values[0]
+            header_map = {name: idx for idx, name in enumerate(header)}
+            url_idx = header_map.get("URL")
         # 新しい記事のみを追加（重複チェック付き）
         existing_urls = set()
-        if len(existing_values) > 1:  # ヘッダー以外の行がある場合
-            for row in existing_values[1:]:  # ヘッダーを除く
-                if len(row) > 4:  # URL列（5列目）が存在
-                    existing_urls.add(row[4])  # URLを記録
-        
+        if url_idx is not None and len(existing_values) > 1:
+            for row in existing_values[1:]:
+                if len(row) > url_idx:
+                    existing_urls.add(row[url_idx])
         # 新しい記事のみをフィルタリング
         new_rows = []
         for row in rows:
-            article_url = row[4] if len(row) > 4 else ''  # URL列
+            article_url = row[url_idx] if url_idx is not None and len(row) > url_idx else ''
             if article_url and article_url not in existing_urls:
                 new_rows.append(row)
         
