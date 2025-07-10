@@ -8,6 +8,7 @@ from scraper.sponichi import fetch_all_sponichi_articles
 from scraper.hochi import fetch_hochi_articles
 from scraper.nikkan_sports import fetch_all_nikkan_sports_articles
 from scraper.sanspo import fetch_all_sanspo_articles
+from scraper.chunichi import fetch_all_chunichi_articles
 from ai.gemini import process_articles_with_ai
 from sheets.google_sheets import update_sheets, get_existing_urls_by_source
 from utils import deduplicate_articles
@@ -54,26 +55,33 @@ def main():
         all_articles.extend(sanspo_articles)
         print(f"サンスポ記事数: {len(sanspo_articles)}")
         
-        # 5. 重複除去
-        print("\n5. 重複除去中...")
+        # 5. 中日スポーツ記事取得
+        print("\n5. 中日スポーツ記事取得中...")
+        chunichi_existing_urls = get_existing_urls_by_source('中日スポーツ')
+        chunichi_articles = fetch_all_chunichi_articles(exclude_urls=chunichi_existing_urls)
+        all_articles.extend(chunichi_articles)
+        print(f"中日スポーツ記事数: {len(chunichi_articles)}")
+        
+        # 6. 重複除去
+        print("\n6. 重複除去中...")
         unique_articles = deduplicate_articles(all_articles)
         print(f"重複除去後記事数: {len(unique_articles)}")
         
-        # 6. AIコメント抽出（キーワードあり記事のみ）
-        print("\n6. AIコメント抽出中...")
+        # 7. AIコメント抽出（キーワードあり記事のみ）
+        print("\n7. AIコメント抽出中...")
         keyword_articles = [a for a in unique_articles if a.get('has_keywords', False)]
         processed_keyword_articles = process_articles_with_ai(keyword_articles)
         print(f"AI処理完了記事数: {len(processed_keyword_articles)}")
         
-        # 7. キーワードなし記事にもscout_comments/scout_rowsをセット
+        # 8. キーワードなし記事にもscout_comments/scout_rowsをセット
         no_keyword_articles = [a for a in unique_articles if not a.get('has_keywords', False)]
         for a in no_keyword_articles:
             a['scout_comments'] = "キーワードなし"
             a['scout_rows'] = []
         
-        # 8. 全記事をマージしてGoogle Sheets更新
+        # 9. 全記事をマージしてGoogle Sheets更新
         all_processed = processed_keyword_articles + no_keyword_articles
-        print("\n7. Google Sheets更新中...")
+        print("\n8. Google Sheets更新中...")
         update_sheets(all_processed)
         
         print(f"\n=== 処理完了 ===")
