@@ -26,7 +26,10 @@ jobs:
           pip install -r requirements.txt
 
       - name: Decode Google Sheets credentials
-        run: echo "${{ secrets.GOOGLE_CREDENTIALS_BASE64 }}" | base64 -d > credentials.json
+        run: |
+          echo "${{ secrets.GOOGLE_CREDENTIALS_BASE64 }}" | base64 -d > credentials.json
+          echo "✅ credentials.json created successfully"
+          ls -la credentials.json
 
       - name: Run draft news crawler
         run: python main_new.py
@@ -43,9 +46,4 @@ jobs:
           path: sql_output/
           retention-days: 30
 
-      - name: Upload credentials.json as artifact (for debugging)
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: credentials-debug
-          path: credentials.json 
+ 
