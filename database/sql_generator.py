@@ -186,7 +186,15 @@ LIMIT 1;"""
             published_at = row[5]
             article_url = row[6]
             
-            # SQLエスケープ処理
+            # 半角スペースを削除してからSQLエスケープ処理
+            player_name = player_name.strip()
+            player_team = player_team.strip()
+            scout_name = scout_name.strip()
+            scout_team = scout_team.strip()
+            comment_content = comment_content.strip()
+            published_at = published_at.strip()
+            article_url = article_url.strip()
+            
             escaped_player_name = player_name.replace("'", "''")
             escaped_comment = comment_content.replace("'", "''")
             escaped_scout_name = scout_name.replace("'", "''")

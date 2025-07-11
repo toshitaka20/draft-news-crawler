@@ -220,7 +220,13 @@ class SupabaseScoutCommentGenerator:
             # 選手IDを取得
             player_id = player_id_map.get(player_name)
             
-            # SQLエスケープ処理
+            # 半角スペースを削除してからSQLエスケープ処理
+            scout_team = scout_team.strip()
+            scout_name = scout_name.strip()
+            comment_content = comment_content.strip()
+            published_at = published_at.strip()
+            article_url = article_url.strip()
+            
             escaped_comment = comment_content.replace("'", "''")
             escaped_scout_name = scout_name.replace("'", "''")
             escaped_url = article_url.replace("'", "''")
@@ -237,7 +243,7 @@ INSERT INTO scout_comments (
     published_at,
     source_url
 ) VALUES (
-    {player_id},
+    '{player_id}',
     '{scout_team}',
     '{escaped_scout_name}',
     '{escaped_comment}',
