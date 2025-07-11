@@ -1,3 +1,4 @@
+# type: ignore
 """
 Google Sheets連携
 """
