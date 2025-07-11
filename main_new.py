@@ -96,6 +96,10 @@ def main():
             try:
                 sql_file = generate_scout_comment_sql_with_resolved_ids(all_scout_rows)
                 print(f"✅ スカウトコメントSQL生成完了: {sql_file}")
+                
+                # SQLファイルはGitHub Actionsのartifactからダウンロード可能
+                print("\n📁 SQLファイルはGitHub Actionsのartifactからダウンロードできます")
+                    
             except Exception as e:
                 print(f"⚠️ スカウトコメントSQL生成エラー: {e}")
                 print("Googleスプレッドシートの更新のみ実行します...")
