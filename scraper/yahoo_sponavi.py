@@ -3,10 +3,12 @@ Yahoo!スポーツナビ専用スクレイパー
 高頻度更新対応、「もっと見る」機能対応
 """
 # type: ignore
+# mypy: disable-error-code=attr-defined,operator,return-value
 
 import requests
 import time
 import json
+import re
 from typing import List, Dict, Any, Set, Optional
 from bs4 import BeautifulSoup
 from config import AI_KEYWORDS
@@ -20,6 +22,30 @@ class YahooSponaviScraper:
         }
         self.session = requests.Session()
         self.session.headers.update(self.headers)
+    
+    def is_valid_yahoo_news_url(self, url: str) -> bool:
+        """
+        URLが有効なYahoo!ニュースのURLかどうかをチェック
+        """
+        if not url:
+            return False
+        
+        # 正しいYahoo!ニュースのURLパターン
+        yahoo_news_pattern = r'^https://news\.yahoo\.co\.jp/articles/[a-zA-Z0-9_-]+$'
+        
+        # パターンマッチング
+        if re.match(yahoo_news_pattern, url):
+            return True
+        
+        # 追加のチェック: /articles/ が含まれているか
+        if '/articles/' not in url:
+            return False
+        
+        # ドメインが正しいかチェック
+        if not url.startswith('https://news.yahoo.co.jp/'):
+            return False
+        
+        return True
     
     def get_category_url(self, category: str) -> str:
         """
@@ -62,9 +88,14 @@ class YahooSponaviScraper:
                 article_info = self._parse_article_item(item, category)
                 
                 if article_info and article_info['url'] not in exclude_urls:
-                    articles.append(article_info)
+                    # URLフィルタリングを適用
+                    if self.is_valid_yahoo_news_url(article_info['url']):
+                        articles.append(article_info)
+                        print(f"[DEBUG] 有効なYahoo!ニュースURL: {article_info['url']}")
+                    else:
+                        print(f"[DEBUG] 無効なURLを除外: {article_info['url']}")
             
-            print(f"[DEBUG] Yahoo!スポーツナビ {category}: {len(articles)}件の記事情報を取得")
+            print(f"[DEBUG] Yahoo!スポーツナビ {category}: {len(articles)}件の有効な記事情報を取得")
             return articles
             
         except Exception as e:
@@ -108,14 +139,14 @@ class YahooSponaviScraper:
         news_items = []
         
         for link in all_links:
-            href = link.get('href', '')
-            if '/articles/' in href:  # /news/ を削除、/articles/ のみに集中
+            href = link.get('href', '')  # type: ignore
+            if href and '/articles/' in href:  # /news/ を削除、/articles/ のみに集中
                 news_items.append(link)
         
         print(f"[DEBUG] フォールバック: {len(news_items)} 件のニュースリンクを発見")
         return news_items[:50]  # 最大50件に制限
     
-    def _parse_article_item(self, item, category: str) -> Dict[str, Any]:
+    def _parse_article_item(self, item, category: str) -> Optional[Dict[str, Any]]:
         """
         記事アイテムから情報を抽出
         """
@@ -125,7 +156,7 @@ class YahooSponaviScraper:
             if not link:
                 return None
             
-            href = link.get('href', '')
+            href = str(link.get('href', ''))
             if not href:
                 return None
             
@@ -144,16 +175,16 @@ class YahooSponaviScraper:
             
             # タイトル取得候補
             title_candidates = [
-                link.get_text(),
-                link.get('title', ''),
-                link.get('alt', '')
+                str(link.get_text()),
+                str(link.get('title', '')),
+                str(link.get('alt', ''))
             ]
             
             # 親要素からタイトルを探す
             if hasattr(item, 'find'):
                 title_elements = item.find_all(['h3', 'h4', 'h5', '.title', '.headline'])
                 for elem in title_elements:
-                    title_candidates.append(elem.get_text())
+                    title_candidates.append(str(elem.get_text()))
             
             for candidate in title_candidates:
                 if candidate and len(candidate.strip()) > 5:
@@ -173,7 +204,7 @@ class YahooSponaviScraper:
                 for elem in date_elements:
                     date_text = elem.get('datetime') or elem.get_text()
                     if date_text:
-                        date = format_date_with_time(clean_text(date_text))
+                        date = format_date_with_time(clean_text(str(date_text)))
                         break
             
             return {
