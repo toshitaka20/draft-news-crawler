@@ -27,8 +27,7 @@ class YahooSponaviScraper:
         """
         category_urls = {
             "高校野球": "https://sports.yahoo.co.jp/list/news/?genre=hsb",
-            "大学野球": "https://sports.yahoo.co.jp/list/news/?genre=baseball_univ",
-            "プロ野球": "https://sports.yahoo.co.jp/list/news/?genre=baseball_npb"
+            "大学野球": "https://sports.yahoo.co.jp/list/news/?genre=baseball_univ"
         }
         
         return category_urls.get(category, category_urls["高校野球"])
