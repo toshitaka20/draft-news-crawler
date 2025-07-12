@@ -20,7 +20,7 @@ SPONICHI_URLS = {
 
 # スポーツ報知URL
 HOCHI_URLS = {
-    "高校野球": "https://hochi.news/hsb/",
+    "高校野球": "https://hochi.news/tag/%E9%AB%98%E6%A0%A1%E9%87%8E%E7%90%83",
     "大学・社会人野球": "https://hochi.news/tag/%E3%82%A2%E3%83%9E%E9%87%8E%E7%90%83"
 }
 
