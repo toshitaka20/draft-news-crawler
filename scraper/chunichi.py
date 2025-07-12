@@ -8,7 +8,7 @@ import time
 from typing import List, Dict, Any
 from bs4 import BeautifulSoup
 from config import MAX_ARTICLES_PER_SOURCE, SLEEP_SECONDS, AI_KEYWORDS
-from utils import clean_text, format_date, contains_keywords
+from utils import clean_text, format_date_with_time, contains_keywords
 
 def fetch_chunichi_article_links(list_url: str, max_articles: int = MAX_ARTICLES_PER_SOURCE) -> List[str]:
     """
@@ -57,7 +57,7 @@ def fetch_chunichi_article_body(article_url: str) -> tuple:
     date = ''
     date_tag = soup.select_one('p.sub-ttl')
     if date_tag:
-        date = format_date(clean_text(date_tag.get_text()))
+        date = format_date_with_time(clean_text(date_tag.get_text()))
         print(f"[DEBUG] 日付発見: {date}")
     # 本文取得 <div class="block">（複数ある場合は結合）
     body = ''

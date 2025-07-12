@@ -7,7 +7,7 @@ import time
 from typing import List, Dict, Any
 from bs4 import BeautifulSoup
 from config import SPONICHI_URLS, MAX_ARTICLES_PER_SOURCE, SLEEP_SECONDS, AI_KEYWORDS
-from utils import clean_text, format_date, contains_keywords
+from utils import clean_text, format_date_with_time, contains_keywords
 
 def fetch_sponichi_article_links(list_url: str, max_articles: int = MAX_ARTICLES_PER_SOURCE) -> List[str]:
     """
@@ -110,7 +110,7 @@ def fetch_sponichi_article_body(article_url: str) -> tuple:
         if row_div:
             date_p = row_div.find('p', attrs={'data-component': 'date-format'})  # type: ignore
             if date_p:
-                date = format_date(clean_text(date_p.get_text()))
+                date = format_date_with_time(clean_text(date_p.get_text()))
                 print(f"[DEBUG] 日付発見: {date}")
     
     # 本文はdata-component="article-body"の配下の<p>タグのみから取得

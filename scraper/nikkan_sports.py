@@ -8,7 +8,7 @@ import time
 from typing import List, Dict, Any
 from bs4 import BeautifulSoup
 from config import NIKKAN_FEEDS, MAX_ARTICLES_PER_SOURCE, SLEEP_SECONDS, SCOUT_KEYWORDS, AI_KEYWORDS
-from utils import clean_text, format_date, contains_keywords
+from utils import clean_text, format_date_with_time, contains_keywords
 
 def fetch_nikkan_article_body(url: str) -> str:
     """
@@ -65,7 +65,7 @@ def fetch_nikkan_sports_articles(rss_url: str, max_articles: int = MAX_ARTICLES_
             try:
                 title = clean_text(str(entry.get('title', '')))
                 url = str(entry.get('link', ''))
-                date = format_date(str(entry.get('published', '')))
+                date = format_date_with_time(str(entry.get('published', '')))
                 
                 # 既存URLチェック
                 if url in exclude_urls:
