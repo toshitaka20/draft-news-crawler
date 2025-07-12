@@ -1,10 +1,6 @@
 name: Draft News Crawler
 
 on:
-  schedule:
-    - cron: '0 0 * * *'  # JST 9:00（UTCで0:00）
-    - cron: '0 6 * * *'  # JST 15:00（UTCで6:00）
-    - cron: '0 12 * * *' # JST 21:00（UTCで12:00）
   workflow_dispatch:  # 手動実行可能
 
 jobs:
