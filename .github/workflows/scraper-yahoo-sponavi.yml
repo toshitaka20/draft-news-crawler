@@ -1,0 +1,55 @@
+name: Yahoo! Sports Navi Scraper (5-23時のみ実行)
+
+on:
+  schedule:
+    # 毎日5時〜23時の間、1時間ごとに実行（19回/日）
+    - cron: '0 5-23 * * *'  # 毎日5時から23時まで毎時0分に実行
+  workflow_dispatch:  # 手動実行可能
+
+jobs:
+  run-yahoo-scraper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Decode Google Sheets credentials
+        run: |
+          echo "${{ secrets.GOOGLE_CREDENTIALS_BASE64 }}" | base64 -d > credentials.json
+          echo "✅ credentials.json created successfully"
+          ls -la credentials.json
+
+      - name: Run Yahoo! Sports Navi scraper
+        run: python main_yahoo_sponavi.py
+        env:
+          GOOGLE_GENAI_API_KEY: ${{ secrets.GOOGLE_GENAI_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+
+      - name: Upload SQL files as artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sql-files-yahoo-${{ github.run_number }}
+          path: sql_output/
+          retention-days: 3
+
+      - name: Upload logs as artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-yahoo-${{ github.run_number }}
+          path: "*.log"
+          retention-days: 1 

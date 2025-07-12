@@ -1,0 +1,166 @@
+"""
+Yahoo!スポーツナビ専用記事収集・AIコメント抽出システム
+1日24回実行（毎時実行）
+"""
+
+from typing import List, Dict, Any
+from scraper.yahoo_sponavi import YahooSponaviScraper
+from ai.gemini import process_articles_with_ai
+from sheets.google_sheets import update_sheets, get_existing_urls_by_source
+from database.supabase_client import generate_scout_comment_sql_with_resolved_ids
+from utils import filter_yahoo_against_existing, smart_deduplicate_articles, contains_keywords
+from config import YAHOO_SPONAVI_URLS, YAHOO_SPONAVI_MAX_ARTICLES, AI_KEYWORDS
+
+def main():
+    """
+    Yahoo!スポーツナビ専用メイン処理
+    """
+    print("=== Yahoo!スポーツナビ記事収集システム ===")
+    
+    all_articles = []
+    
+    try:
+        # Yahoo!スポーツナビ専用スクレイパー
+        scraper = YahooSponaviScraper()
+        
+        # 既存URLを取得（重複回避）
+        yahoo_existing_urls = get_existing_urls_by_source('Yahoo!スポーツナビ')
+        print(f"[DEBUG] Yahoo!スポーツナビ既存URL数: {len(yahoo_existing_urls)}")
+        
+        # 各カテゴリの記事を取得
+        for category, url in YAHOO_SPONAVI_URLS.items():
+            print(f"\n=== {category}記事取得中 ===")
+            category_articles = scraper.fetch_article_list(
+                category=category, 
+                max_articles=YAHOO_SPONAVI_MAX_ARTICLES,
+                exclude_urls=yahoo_existing_urls
+            )
+            
+            # 記事の詳細内容を取得
+            for article in category_articles:
+                if article.get('url'):
+                    title, date, body = scraper.fetch_article_content(article['url'])
+                    if title and body:
+                        article['title'] = title
+                        article['body'] = body
+                        article['date'] = date or article.get('date', '')
+                        article['has_keywords'] = contains_keywords(f"{title} {body}", AI_KEYWORDS)
+            
+            all_articles.extend(category_articles)
+            print(f"{category}記事数: {len(category_articles)}")
+        
+        print(f"\n=== 総記事数: {len(all_articles)}件 ===")
+        
+        if not all_articles:
+            print("新しい記事が見つかりませんでした。")
+            return
+        
+        # 1. 既存5社の記事との重複チェック（Yahoo独自記事のみ抽出）
+        print("\n1. 既存5社記事との重複チェック中...")
+        unique_yahoo_articles = filter_yahoo_against_existing(all_articles, threshold=0.7)
+        print(f"Yahoo独自記事数: {len(unique_yahoo_articles)}")
+        
+        # 2. Yahoo記事間の重複除去（既存記事との比較含む）
+        print("\n2. Yahoo記事間の重複除去中...")
+        deduplicated_articles = smart_deduplicate_articles(
+            unique_yahoo_articles, 
+            include_existing_comparison=True
+        )
+        print(f"重複除去後記事数: {len(deduplicated_articles)}")
+        
+        if not deduplicated_articles:
+            print("重複除去後、新しい記事が見つかりませんでした。")
+            return
+        
+        # 3. AIコメント抽出（キーワードあり記事のみ）
+        print("\n3. AIコメント抽出中...")
+        keyword_articles = [a for a in deduplicated_articles if a.get('has_keywords', False)]
+        
+        if keyword_articles:
+            processed_keyword_articles = process_articles_with_ai(keyword_articles)
+            print(f"AI処理完了記事数: {len(processed_keyword_articles)}")
+        else:
+            processed_keyword_articles = []
+            print("キーワード該当記事なし")
+        
+        # 4. キーワードなし記事にもscout_comments/scout_rowsをセット
+        no_keyword_articles = [a for a in deduplicated_articles if not a.get('has_keywords', False)]
+        for a in no_keyword_articles:
+            a['scout_comments'] = "キーワードなし"
+            a['scout_rows'] = []
+        
+        # 5. 全記事をマージ
+        all_processed = processed_keyword_articles + no_keyword_articles
+        
+        # 6. スカウトコメントをSupabase用SQLに変換
+        print("\n4. スカウトコメントSQL生成中...")
+        all_scout_rows = []
+        for article in all_processed:
+            scout_rows = article.get('scout_rows', [])
+            if scout_rows:
+                all_scout_rows.extend(scout_rows)
+        
+        if all_scout_rows:
+            print(f"スカウトコメント総数: {len(all_scout_rows)}件")
+            try:
+                sql_file = generate_scout_comment_sql_with_resolved_ids(all_scout_rows)
+                print(f"✅ スカウトコメントSQL生成完了: {sql_file}")
+                
+                # SQLファイルはGitHub Actionsのartifactからダウンロード可能
+                print("\n📁 SQLファイルはGitHub Actionsのartifactからダウンロードできます")
+                    
+            except Exception as e:
+                print(f"⚠️ スカウトコメントSQL生成エラー: {e}")
+                print("Googleスプレッドシートの更新のみ実行します...")
+        else:
+            print("スカウトコメントが見つかりませんでした。")
+        
+        # 7. Google Sheets更新
+        print("\n5. Google Sheets更新中...")
+        update_sheets(all_processed)
+        
+        print(f"\n=== Yahoo!スポーツナビ処理完了 ===")
+        print(f"総記事数: {len(all_processed)}")
+        
+        # 結果サマリー
+        sources = {}
+        scout_comment_count = 0
+        for article in all_processed:
+            source = article.get('source', '不明')
+            sources[source] = sources.get(source, 0) + 1
+            scout_comment_count += len(article.get('scout_rows', []))
+        
+        print("\n=== ソース別記事数 ===")
+        for source, count in sources.items():
+            print(f"{source}: {count}件")
+        
+        print(f"\n=== スカウトコメント統計 ===")
+        print(f"スカウトコメント総数: {scout_comment_count}件")
+        
+        # スカウトコメントの内訳
+        if scout_comment_count > 0:
+            scout_teams = {}
+            for article in all_processed:
+                for scout_row in article.get('scout_rows', []):
+                    if len(scout_row) >= 4:
+                        team = scout_row[3]  # スカウト球団名
+                        scout_teams[team] = scout_teams.get(team, 0) + 1
+            
+            print("\n=== 球団別スカウトコメント数 ===")
+            for team, count in sorted(scout_teams.items()):
+                print(f"{team}: {count}件")
+        
+        # 実行結果の詳細出力
+        print(f"\n=== 実行結果詳細 ===")
+        print(f"取得記事数: {len(all_articles)}")
+        print(f"既存5社重複除去後: {len(unique_yahoo_articles)}")
+        print(f"最終処理記事数: {len(all_processed)}")
+        
+    except Exception as e:
+        print(f"[エラー] Yahoo!スポーツナビメイン処理失敗: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+if __name__ == "__main__":
+    main() 

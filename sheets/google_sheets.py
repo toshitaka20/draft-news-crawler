@@ -119,12 +119,26 @@ def update_sheets(articles: List[Dict[str, Any]]):
                 if len(row) > 4:  # URL列（5番目）が存在
                     existing_urls.add(row[4])  # URLを記録
         
+        print(f"[DEBUG] 既存データ状況:")
+        print(f"  - スプレッドシート総行数: {len(existing_values)}行（ヘッダー含む）")
+        print(f"  - 既存記事数: {len(existing_values) - 1 if existing_values else 0}件")
+        print(f"  - 既存URL数: {len(existing_urls)}件")
+        
         # 新しい記事のみをフィルタリング（URL列は5番目=インデックス4）
         new_rows = []
+        duplicate_count = 0
         for row in rows:
             article_url = row[4] if len(row) > 4 else ''  # URL列（5番目）
             if article_url and article_url not in existing_urls:
                 new_rows.append(row)
+            elif article_url:
+                duplicate_count += 1
+        
+        # 重複チェック結果をログ出力
+        print(f"[DEBUG] 重複チェック結果:")
+        print(f"  - 処理対象記事数: {len(rows)}件")
+        print(f"  - 既存URL重複除外: {duplicate_count}件")
+        print(f"  - 新規追加対象: {len(new_rows)}件")
         
         # 新しい記事のみを追加（効率的な範囲指定）
         if new_rows:
@@ -277,3 +291,136 @@ def get_existing_urls_by_source(source: str) -> set[str]:
     except Exception as e:
         print(f"[既存URL取得エラー] {source}: {e}")
         return set() 
+
+def get_existing_articles_content() -> List[Dict[str, Any]]:
+    """
+    Google Sheetsから既存記事の内容（タイトル・本文・ソース・URL）を取得
+    重複除去のための内容比較に使用
+    """
+    try:
+        spreadsheet = setup_google_sheets()
+        sheet = spreadsheet.worksheet("Articles")
+        articles = []
+        
+        values = sheet.get_all_values()
+        if not values or len(values) < 2:
+            return []
+        
+        header = values[0]
+        header_map = {name: idx for idx, name in enumerate(header)}
+        
+        # 必要なカラムのインデックスを取得
+        title_idx = header_map.get("タイトル")
+        body_idx = header_map.get("本文")
+        source_idx = header_map.get("ソース")
+        url_idx = header_map.get("URL")
+        
+        if None in [title_idx, body_idx, source_idx, url_idx]:
+            print("[既存記事取得エラー] 必要なカラムが見つかりません")
+            return []
+        
+        # 既存記事のデータを取得
+        for row in values[1:]:
+            if len(row) > max(title_idx, body_idx, source_idx, url_idx):
+                article = {
+                    'title': row[title_idx] if title_idx < len(row) else '',
+                    'body': row[body_idx] if body_idx < len(row) else '',
+                    'source': row[source_idx] if source_idx < len(row) else '',
+                    'url': row[url_idx] if url_idx < len(row) else ''
+                }
+                
+                # 内容が十分にある記事のみを対象とする
+                if len(article['title']) > 10 and len(article['body']) > 50:
+                    articles.append(article)
+        
+        print(f"[DEBUG] 既存記事の内容取得: {len(articles)}件")
+        return articles
+        
+    except Exception as e:
+        print(f"[既存記事取得エラー] {e}")
+        return []
+
+def get_existing_articles_by_source(source: str) -> List[Dict[str, Any]]:
+    """
+    特定ソースの既存記事の内容を取得
+    """
+    try:
+        all_articles = get_existing_articles_content()
+        
+        # ソース名のマッピング
+        source_mapping = {
+            'スポニチ': ['スポニチ', 'sponichi'],
+            'スポーツ報知': ['スポーツ報知', 'hochi', '報知'],
+            '日刊スポーツ': ['日刊スポーツ', 'nikkan', 'nikkan sports'],
+            'サンスポ': ['サンスポ', 'sanspo'],
+            '中日スポーツ': ['中日スポーツ', 'chunichi'],
+            'Yahoo!スポーツナビ': ['Yahoo!スポーツナビ', 'yahoo']
+        }
+        
+        target_sources = source_mapping.get(source, [source])
+        
+        filtered_articles = []
+        for article in all_articles:
+            article_source = article['source'].lower()
+            if any(target in article_source for target in target_sources):
+                filtered_articles.append(article)
+        
+        print(f"[DEBUG] {source}の既存記事数: {len(filtered_articles)}件")
+        return filtered_articles
+        
+    except Exception as e:
+        print(f"[既存記事取得エラー] {source}: {e}")
+        return []
+
+def update_existing_article(article_url: str, new_article: Dict[str, Any]):
+    """
+    既存記事を新しい記事の内容で更新（優先度の高いソース用）
+    """
+    try:
+        spreadsheet = setup_google_sheets()
+        sheet = spreadsheet.worksheet("Articles")
+        
+        values = sheet.get_all_values()
+        if not values or len(values) < 2:
+            return False
+        
+        header = values[0]
+        header_map = {name: idx for idx, name in enumerate(header)}
+        
+        # 必要なカラムのインデックスを取得
+        url_idx = header_map.get("URL")
+        title_idx = header_map.get("タイトル")
+        body_idx = header_map.get("本文")
+        source_idx = header_map.get("ソース")
+        date_idx = header_map.get("日付")
+        
+        if None in [url_idx, title_idx, body_idx, source_idx]:
+            print("[記事更新エラー] 必要なカラムが見つかりません")
+            return False
+        
+        # 対象記事の行を見つける
+        for row_idx, row in enumerate(values[1:], start=2):  # 2行目から開始
+            if len(row) > url_idx and row[url_idx] == article_url:
+                # 記事を更新
+                update_data = {}
+                if title_idx < len(header):
+                    update_data[f"{chr(65 + title_idx)}{row_idx}"] = new_article.get('title', '')
+                if body_idx < len(header):
+                    update_data[f"{chr(65 + body_idx)}{row_idx}"] = new_article.get('body', '')
+                if source_idx < len(header):
+                    update_data[f"{chr(65 + source_idx)}{row_idx}"] = new_article.get('source', '')
+                if date_idx < len(header):
+                    update_data[f"{chr(65 + date_idx)}{row_idx}"] = new_article.get('date', '')
+                
+                if update_data:
+                    # 各セルを個別に更新
+                    for range_name, value in update_data.items():
+                        sheet.update(range_name, [[value]])
+                    print(f"[DEBUG] 既存記事を更新: {new_article.get('title', '')[:50]}...")
+                    return True
+        
+        return False
+        
+    except Exception as e:
+        print(f"[記事更新エラー] {e}")
+        return False 
