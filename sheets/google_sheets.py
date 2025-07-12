@@ -272,19 +272,12 @@ def get_existing_urls_by_source(source: str) -> set[str]:
         if source_idx is None or url_idx is None:
             print("[既存URL取得エラー] 'ソース'または'URL'カラムが見つかりません")
             return set()
-        # ソース名のマッピング
-        source_mapping = {
-            'スポニチ': ['スポニチ', 'sponichi'],
-            'スポーツ報知': ['スポーツ報知', 'hochi', '報知'],
-            '日刊スポーツ': ['日刊スポーツ', 'nikkan', 'nikkan sports'],
-            'サンスポ': ['サンスポ', 'sanspo']
-        }
-        target_sources = source_mapping.get(source, [source])
+        # ソース名の完全一致で検索
         for row in values[1:]:
             if len(row) > max(source_idx, url_idx):
-                row_source = row[source_idx].lower()
+                row_source = row[source_idx]
                 row_url = row[url_idx]
-                if any(target in row_source for target in target_sources) and row_url:
+                if row_source == source and row_url:
                     urls.add(row_url)
         print(f"[DEBUG] {source}の既存URL数: {len(urls)}")
         return urls
@@ -347,22 +340,10 @@ def get_existing_articles_by_source(source: str) -> List[Dict[str, Any]]:
     try:
         all_articles = get_existing_articles_content()
         
-        # ソース名のマッピング
-        source_mapping = {
-            'スポニチ': ['スポニチ', 'sponichi'],
-            'スポーツ報知': ['スポーツ報知', 'hochi', '報知'],
-            '日刊スポーツ': ['日刊スポーツ', 'nikkan', 'nikkan sports'],
-            'サンスポ': ['サンスポ', 'sanspo'],
-            '中日スポーツ': ['中日スポーツ', 'chunichi'],
-            'Yahoo!スポーツナビ': ['Yahoo!スポーツナビ', 'yahoo']
-        }
-        
-        target_sources = source_mapping.get(source, [source])
-        
+        # ソース名の完全一致で検索
         filtered_articles = []
         for article in all_articles:
-            article_source = article['source'].lower()
-            if any(target in article_source for target in target_sources):
+            if article['source'] == source:
                 filtered_articles.append(article)
         
         print(f"[DEBUG] {source}の既存記事数: {len(filtered_articles)}件")

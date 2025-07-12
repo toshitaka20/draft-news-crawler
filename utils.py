@@ -436,11 +436,12 @@ def deduplicate_articles(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     """
     return deduplicate_articles_advanced(articles) 
 
-def deduplicate_articles_with_existing(articles: List[Dict[str, Any]], similarity_threshold: float = 0.8) -> List[Dict[str, Any]]:
+def compare_with_existing_articles(articles: List[Dict[str, Any]], similarity_threshold: float = 0.8) -> List[Dict[str, Any]]:
     """
-    既存記事との内容比較を含む高度な重複除去
+    既存記事との内容比較のみを行う
+    （記事間の重複除去は既に完了している前提）
     """
-    print(f"[DEBUG] 既存記事との重複除去開始: {len(articles)}件")
+    print(f"[DEBUG] 既存記事との内容比較開始: {len(articles)}件")
     
     # Google Sheetsから既存記事の内容を取得
     from sheets.google_sheets import get_existing_articles_content, update_existing_article
@@ -452,14 +453,11 @@ def deduplicate_articles_with_existing(articles: List[Dict[str, Any]], similarit
         print(f"[DEBUG] 既存記事取得エラー: {e}")
         existing_articles = []
     
-    # 1. 通常の重複除去（URL、ハッシュ、類似度ベース）
-    deduplicated_articles = deduplicate_articles_advanced(articles, similarity_threshold)
-    
-    # 2. 既存記事との内容比較
+    # 既存記事との内容比較のみ
     final_articles = []
     updated_articles = []  # 更新された記事のリスト
     
-    for article in deduplicated_articles:
+    for article in articles:
         is_duplicate_of_existing = False
         
         # 既存記事と類似度をチェック
@@ -479,7 +477,7 @@ def deduplicate_articles_with_existing(articles: List[Dict[str, Any]], similarit
                             print(f"[DEBUG] 既存記事を更新: {article.get('title', '')[:50]}... (新: {article.get('source', '')} > 既存: {existing_article.get('source', '')})")
                 else:
                     # 既存記事の方が優先度が高い場合、新しい記事を除外
-                    print(f"[DEBUG] 既存記事を優先: {existing_article.get('title', '')[:50]}... (既存: {existing_article.get('source', '')} > 新: {article.get('source', '')})")
+                    print(f"[DEBUG] 既存記事を優先: {article.get('title', '')[:50]}... (既存: {existing_article.get('source', '')} > 新: {article.get('source', '')})")
                 
                 is_duplicate_of_existing = True
                 break
@@ -487,20 +485,54 @@ def deduplicate_articles_with_existing(articles: List[Dict[str, Any]], similarit
         if not is_duplicate_of_existing:
             final_articles.append(article)
     
-    print(f"[DEBUG] 既存記事との重複除去後: {len(final_articles)}件（新規）+ {len(updated_articles)}件（更新）")
+    print(f"[DEBUG] 既存記事との内容比較後: {len(final_articles)}件（新規）+ {len(updated_articles)}件（更新）")
     
-    # 3. 重複除去結果の統計
+    # 内容比較結果の統計
     all_processed = final_articles + updated_articles
     sources = {}
     for article in all_processed:
         source = article.get('source', '不明')
         sources[source] = sources.get(source, 0) + 1
     
-    print("\n[DEBUG] 既存記事との重複除去後のソース別記事数:")
+    print("\n[DEBUG] 既存記事との内容比較後のソース別記事数:")
     for source, count in sorted(sources.items()):
         print(f"  {source}: {count}件")
     
     return final_articles  # 新規記事のみを返す（更新された記事は別途処理済み）
+
+def filter_existing_yahoo_urls(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    既存のYahoo!スポーツナビ記事とのURL重複チェック
+    URLのみで重複チェックを行い、ハッシュや類似度ベースのチェックは行わない
+    """
+    print(f"[DEBUG] 既存Yahoo記事URL重複チェック開始: {len(articles)}件")
+    
+    # 既存のYahoo!スポーツナビ記事のURLを取得
+    from sheets.google_sheets import get_existing_urls_by_source
+    
+    try:
+        existing_yahoo_urls = get_existing_urls_by_source('Yahoo!スポーツナビ')
+        print(f"[DEBUG] 既存Yahoo記事URL数: {len(existing_yahoo_urls)}件")
+    except Exception as e:
+        print(f"[DEBUG] 既存Yahoo記事URL取得エラー: {e}")
+        existing_yahoo_urls = set()
+    
+    # URL重複チェック
+    unique_articles = []
+    duplicate_count = 0
+    
+    for article in articles:
+        article_url = article.get('url', '')
+        if article_url and article_url not in existing_yahoo_urls:
+            unique_articles.append(article)
+        elif article_url:
+            duplicate_count += 1
+            print(f"[DEBUG] 既存Yahoo記事URL重複除外: {article.get('title', '')[:50]}...")
+    
+    print(f"[DEBUG] 既存Yahoo記事URL重複除外: {duplicate_count}件")
+    print(f"[DEBUG] 既存Yahoo記事URL重複チェック後: {len(unique_articles)}件")
+    
+    return unique_articles
 
 def filter_yahoo_against_existing(yahoo_articles: List[Dict[str, Any]], threshold: float = 0.7) -> List[Dict[str, Any]]:
     """
@@ -546,8 +578,24 @@ def filter_yahoo_against_existing(yahoo_articles: List[Dict[str, Any]], threshol
 def smart_deduplicate_articles(articles: List[Dict[str, Any]], include_existing_comparison: bool = True) -> List[Dict[str, Any]]:
     """
     スマートな重複除去（既存記事との比較オプション付き）
+    1. まず記事間の重複除去（URL、ハッシュ、類似度ベース）
+    2. 既存Yahoo記事とのURL重複チェック
+    3. その後、既存記事との比較（オプション）
     """
+    print(f"[DEBUG] スマート重複除去開始: {len(articles)}件")
+    
+    # 1. まず記事間の重複除去（URL、ハッシュ、類似度ベース）
+    deduplicated_articles = deduplicate_articles_advanced(articles)
+    print(f"[DEBUG] 記事間重複除去後: {len(deduplicated_articles)}件")
+    
+    # 2. 既存Yahoo記事とのURL重複チェック
+    deduplicated_articles = filter_existing_yahoo_urls(deduplicated_articles)
+    print(f"[DEBUG] 既存Yahoo記事URL重複除去後: {len(deduplicated_articles)}件")
+    
+    # 3. 既存記事との内容比較（オプション）
     if include_existing_comparison:
-        return deduplicate_articles_with_existing(articles)
+        print("[DEBUG] 既存記事との内容比較を実行")
+        return compare_with_existing_articles(deduplicated_articles)
     else:
-        return deduplicate_articles_advanced(articles) 
+        print("[DEBUG] 既存記事との内容比較をスキップ")
+        return deduplicated_articles 
