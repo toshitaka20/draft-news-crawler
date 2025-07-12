@@ -1,7 +1,14 @@
 import os
 import re
 from typing import List, Dict, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# 日本時間（JST）のタイムゾーン
+JST = timezone(timedelta(hours=9))
+
+def now_jst() -> datetime:
+    """日本時間での現在時刻を取得"""
+    return datetime.now(JST)
 
 class PlayerNameMatcher:
     """選手名の表記揺れに対応したマッチング機能"""
@@ -85,7 +92,7 @@ LIMIT 1;"""
         
         sql_parts = [
             "-- 選手ID検索SQL（自動マッチング用）",
-            f"-- 生成日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"-- 生成日時: {now_jst().strftime('%Y-%m-%d %H:%M:%S')}（JST）",
             "-- このSQLを実行して選手IDを確認してください",
             ""
         ]
@@ -104,7 +111,7 @@ LIMIT 1;"""
         
         sql_parts = [
             "-- 選手IDマッピング作成SQL",
-            f"-- 生成日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"-- 生成日時: {now_jst().strftime('%Y-%m-%d %H:%M:%S')}（JST）",
             "-- このSQLを実行して player_id_mapping ビューを作成",
             "",
             "DROP VIEW IF EXISTS player_id_mapping;",
@@ -167,7 +174,7 @@ LIMIT 1;"""
         
         sql_parts = [
             "-- スカウトコメント INSERT文（player_id自動取得版）",
-            f"-- 生成日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"-- 生成日時: {now_jst().strftime('%Y-%m-%d %H:%M:%S')}（JST）",
             "-- 前提: player_id_mapping ビューが作成済みであること",
             "",
             "BEGIN;",
@@ -254,7 +261,7 @@ INSERT INTO scout_comments (
     
     def generate_all_sql_files(self, scout_rows: List[List[str]]) -> Dict[str, str]:
         """全SQLファイルを生成"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = now_jst().strftime("%Y%m%d_%H%M%S")
         files = {}
         
         # 選手名を抽出

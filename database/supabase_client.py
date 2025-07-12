@@ -1,7 +1,14 @@
 import os
 import re
 from typing import List, Dict, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# 日本時間（JST）のタイムゾーン
+JST = timezone(timedelta(hours=9))
+
+def now_jst() -> datetime:
+    """日本時間での現在時刻を取得"""
+    return datetime.now(JST)
 
 # python-dotenvを使用して.envファイルを読み込む
 try:
@@ -198,7 +205,7 @@ class SupabaseScoutCommentGenerator:
         
         sql_parts = [
             f"-- スカウトコメント INSERT文（選手ID解決済み - {mode_text}）",
-            f"-- 生成日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"-- 生成日時: {now_jst().strftime('%Y-%m-%d %H:%M:%S')}（JST）",
             f"-- 選手ID取得結果: {len([p for p in player_id_map.values() if p is not None])}/{len(player_id_map)}名が登録済み",
             "",
             "BEGIN;",
@@ -315,7 +322,7 @@ INSERT INTO scout_comments (
     
     def generate_resolved_sql_file(self, scout_rows: List[List[str]]) -> str:
         """選手ID解決済みSQLファイルを生成"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = now_jst().strftime("%Y%m%d_%H%M%S")
         
         # 選手ID解決済みINSERT SQL生成
         insert_sql = self.generate_insert_sql_with_resolved_ids(scout_rows)
