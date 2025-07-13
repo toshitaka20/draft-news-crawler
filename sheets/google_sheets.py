@@ -431,24 +431,19 @@ def get_existing_articles_content() -> List[Dict[str, Any]]:
         def get_articles_operation():
             sheet = get_worksheet("Articles")
             articles = []
-            
             values = sheet.get_all_values()
             if not values or len(values) < 2:
                 return []
-            
             header = values[0]
             header_map = {name: idx for idx, name in enumerate(header)}
-            
             # 必要なカラムのインデックスを取得
             title_idx = header_map.get("タイトル")
             body_idx = header_map.get("本文")
             source_idx = header_map.get("ソース")
             url_idx = header_map.get("URL")
-            
             if None in [title_idx, body_idx, source_idx, url_idx]:
                 print("[既存記事取得エラー] 必要なカラムが見つかりません")
                 return []
-            
             # 既存記事のデータを取得
             for row in values[1:]:
                 if len(row) > max(title_idx, body_idx, source_idx, url_idx):
@@ -458,16 +453,12 @@ def get_existing_articles_content() -> List[Dict[str, Any]]:
                         'source': row[source_idx] if source_idx < len(row) else '',
                         'url': row[url_idx] if url_idx < len(row) else ''
                     }
-                    
                     # 内容が十分にある記事のみを対象とする
                     if len(article['title']) > 10 and len(article['body']) > 50:
                         articles.append(article)
-            
-        print(f"[DEBUG] 既存記事の内容取得: {len(articles)}件")
-        return articles
-        
+            print(f"[DEBUG] 既存記事の内容取得: {len(articles)}件")
+            return articles
         return safe_sheet_operation(get_articles_operation)
-        
     except Exception as e:
         print(f"[既存記事取得エラー] {e}")
         return []
