@@ -270,40 +270,61 @@ def get_source_priority(source: str) -> int:
     """
     ソースの優先度を取得（数値が小さいほど優先度が高い）
     """
-    priority_map = {
-        # オリジナルソース（既存5社）が最優先
-        'スポニチ': 1,
-        'スポーツ報知': 1,
-        '日刊スポーツ': 1,
-        'サンスポ': 1,
-        '中日スポーツ': 1,
+    try:
+        # Noneや空文字列の場合はデフォルト値を返す
+        if not source:
+            return 5
         
-        # Yahoo!スポーツナビは優先度低め
-        'Yahoo!スポーツナビ': 10,
+        # 文字列でない場合はデフォルト値を返す
+        if not isinstance(source, str):
+            print(f"[DEBUG] get_source_priority: 非文字列値 detected: {source} (type: {type(source)})")
+            return 5
         
-        # その他は中間
-        'その他': 5
-    }
-    
-    return priority_map.get(source, 5)
+        priority_map = {
+            # オリジナルソース（既存5社）が最優先
+            'スポニチ': 1,
+            'スポーツ報知': 1,
+            '日刊スポーツ': 1,
+            'サンスポ': 1,
+            '中日スポーツ': 1,
+            
+            # Yahoo!スポーツナビは優先度低め
+            'Yahoo!スポーツナビ': 10,
+            
+            # その他は中間
+            'その他': 5
+        }
+        
+        result = priority_map.get(source, 5)
+        return result
+    except Exception as e:
+        print(f"[記事更新エラー] get_source_priority エラー: {e}")
+        print(f"  入力値: {source} (type: {type(source)})")
+        return 5
 
 def are_articles_similar(article1: Dict[str, Any], article2: Dict[str, Any], threshold: float = 0.8) -> bool:
     """
     2つの記事の類似度を判定
     """
-    title1 = article1.get('title', '')
-    title2 = article2.get('title', '')
-    body1 = article1.get('body', '')
-    body2 = article2.get('body', '')
-    
-    # タイトルの類似度
-    title_similarity = SequenceMatcher(None, title1, title2).ratio()
-    
-    # 本文の類似度
-    body_similarity = SequenceMatcher(None, body1, body2).ratio()
-    
-    # 総合判定（タイトルと本文の両方が高い類似度の場合）
-    return title_similarity > threshold and body_similarity > threshold
+    try:
+        title1 = article1.get('title', '') or ''
+        title2 = article2.get('title', '') or ''
+        body1 = article1.get('body', '') or ''
+        body2 = article2.get('body', '') or ''
+        
+        # タイトルの類似度
+        title_similarity = SequenceMatcher(None, title1, title2).ratio()
+        
+        # 本文の類似度
+        body_similarity = SequenceMatcher(None, body1, body2).ratio()
+        
+        # 総合判定（タイトルと本文の両方が高い類似度の場合）
+        return title_similarity > threshold and body_similarity > threshold
+    except Exception as e:
+        print(f"[記事更新エラー] 類似度計算エラー: {e}")
+        print(f"  article1: {article1.get('title', '')[:50]}...")
+        print(f"  article2: {article2.get('title', '')[:50]}...")
+        return False
 
 def deduplicate_articles_advanced(articles: List[Dict[str, Any]], similarity_threshold: float = 0.8) -> List[Dict[str, Any]]:
     """
@@ -341,19 +362,35 @@ def deduplicate_articles_advanced(articles: List[Dict[str, Any]], similarity_thr
             else:
                 # 重複した場合、優先度の高いソースを選択
                 existing_article = seen_hashes[content_hash]
-                existing_priority = get_source_priority(existing_article.get('source', ''))
-                current_priority = get_source_priority(article.get('source', ''))
+                existing_source = existing_article.get('source', '') or ''
+                current_source = article.get('source', '') or ''
                 
-                if current_priority < existing_priority:
-                    # 現在の記事の方が優先度が高い場合、置き換える
-                    seen_hashes[content_hash] = article
-                    # リストからも置き換える
-                    for i, a in enumerate(hash_unique_articles):
-                        if a is existing_article:
-                            hash_unique_articles[i] = article
-                            break
-                
-                print(f"[DEBUG] ハッシュ重複検出: {title[:50]}... (優先: {article.get('source', '')} vs {existing_article.get('source', '')})")
+                try:
+                    print(f"[DEBUG] ハッシュ重複除去 - 比較開始:")
+                    print(f"  existing_article source: {existing_article.get('source')} (type: {type(existing_article.get('source'))})")
+                    print(f"  current_article source: {article.get('source')} (type: {type(article.get('source'))})")
+                    
+                    existing_priority = get_source_priority(existing_source)
+                    current_priority = get_source_priority(current_source)
+                    
+                    print(f"[DEBUG] 優先度比較: {current_priority} < {existing_priority} = {current_priority < existing_priority}")
+                    
+                    if current_priority < existing_priority:
+                        # 現在の記事の方が優先度が高い場合、置き換える
+                        seen_hashes[content_hash] = article
+                        # リストからも置き換える
+                        for i, a in enumerate(hash_unique_articles):
+                            if a is existing_article:
+                                hash_unique_articles[i] = article
+                                break
+                    
+                    print(f"[DEBUG] ハッシュ重複検出: {title[:50]}... (優先: {article.get('source', '')} vs {existing_article.get('source', '')})")
+                except Exception as e:
+                    print(f"[記事更新エラー] ハッシュ重複除去エラー: {e}")
+                    print(f"  existing_source: {existing_source} (type: {type(existing_source)})")
+                    print(f"  current_source: {current_source} (type: {type(current_source)})")
+                    print(f"  existing_priority: {existing_priority if 'existing_priority' in locals() else 'undefined'}")
+                    print(f"  current_priority: {current_priority if 'current_priority' in locals() else 'undefined'}")
         else:
             # 内容が少ない記事はそのまま追加
             hash_unique_articles.append(article)
@@ -370,19 +407,37 @@ def deduplicate_articles_advanced(articles: List[Dict[str, Any]], similarity_thr
         for existing_article in final_articles:
             if are_articles_similar(article, existing_article, similarity_threshold):
                 # 重複の場合、優先度の高いソースを選択
-                existing_priority = get_source_priority(existing_article.get('source', ''))
-                current_priority = get_source_priority(article.get('source', ''))
+                existing_source = existing_article.get('source', '') or ''
+                current_source = article.get('source', '') or ''
                 
-                if current_priority < existing_priority:
-                    # 現在の記事の方が優先度が高い場合、置き換える
-                    for i, a in enumerate(final_articles):
-                        if a is existing_article:
-                            final_articles[i] = article
-                            break
-                
-                print(f"[DEBUG] 類似度重複検出: {article.get('title', '')[:50]}... (優先: {article.get('source', '')} vs {existing_article.get('source', '')})")
-                is_duplicate = True
-                break
+                try:
+                    print(f"[DEBUG] 類似度重複除去 - 比較開始:")
+                    print(f"  existing_article source: {existing_article.get('source')} (type: {type(existing_article.get('source'))})")
+                    print(f"  current_article source: {article.get('source')} (type: {type(article.get('source'))})")
+                    
+                    existing_priority = get_source_priority(existing_source)
+                    current_priority = get_source_priority(current_source)
+                    
+                    print(f"[DEBUG] 優先度比較: {current_priority} < {existing_priority} = {current_priority < existing_priority}")
+                    
+                    if current_priority < existing_priority:
+                        # 現在の記事の方が優先度が高い場合、置き換える
+                        for i, a in enumerate(final_articles):
+                            if a is existing_article:
+                                final_articles[i] = article
+                                break
+                    
+                    print(f"[DEBUG] 類似度重複検出: {article.get('title', '')[:50]}... (優先: {article.get('source', '')} vs {existing_article.get('source', '')})")
+                    is_duplicate = True
+                    break
+                except Exception as e:
+                    print(f"[記事更新エラー] 類似度重複除去エラー: {e}")
+                    print(f"  existing_source: {existing_source} (type: {type(existing_source)})")
+                    print(f"  current_source: {current_source} (type: {type(current_source)})")
+                    print(f"  existing_priority: {existing_priority if 'existing_priority' in locals() else 'undefined'}")
+                    print(f"  current_priority: {current_priority if 'current_priority' in locals() else 'undefined'}")
+                    is_duplicate = True
+                    break
         
         if not is_duplicate:
             final_articles.append(article)
@@ -462,25 +517,49 @@ def compare_with_existing_articles(articles: List[Dict[str, Any]], similarity_th
         
         # 既存記事と類似度をチェック
         for existing_article in existing_articles:
-            if are_articles_similar(article, existing_article, similarity_threshold):
-                # 重複の場合、優先度の高いソースを選択
-                existing_priority = get_source_priority(existing_article.get('source', ''))
-                current_priority = get_source_priority(article.get('source', ''))
-                
-                if current_priority < existing_priority:
-                    # 新しい記事の方が優先度が高い場合、既存記事を更新
-                    existing_url = existing_article.get('url', '')
-                    if existing_url:
-                        success = update_existing_article(existing_url, article)
-                        if success:
-                            updated_articles.append(article)
-                            print(f"[DEBUG] 既存記事を更新: {article.get('title', '')[:50]}... (新: {article.get('source', '')} > 既存: {existing_article.get('source', '')})")
-                else:
-                    # 既存記事の方が優先度が高い場合、新しい記事を除外
-                    print(f"[DEBUG] 既存記事を優先: {article.get('title', '')[:50]}... (既存: {existing_article.get('source', '')} > 新: {article.get('source', '')})")
-                
-                is_duplicate_of_existing = True
-                break
+            try:
+                if are_articles_similar(article, existing_article, similarity_threshold):
+                    # 重複の場合、優先度の高いソースを選択
+                    existing_source = existing_article.get('source', '') or ''
+                    current_source = article.get('source', '') or ''
+                    
+                    try:
+                        print(f"[DEBUG] 既存記事比較 - 比較開始:")
+                        print(f"  existing_article source: {existing_article.get('source')} (type: {type(existing_article.get('source'))})")
+                        print(f"  current_article source: {article.get('source')} (type: {type(article.get('source'))})")
+                        
+                        existing_priority = get_source_priority(existing_source)
+                        current_priority = get_source_priority(current_source)
+                        
+                        print(f"[DEBUG] 優先度比較: {current_priority} < {existing_priority} = {current_priority < existing_priority}")
+                        
+                        if current_priority < existing_priority:
+                            # 新しい記事の方が優先度が高い場合、既存記事を更新
+                            existing_url = existing_article.get('url', '')
+                            if existing_url:
+                                success = update_existing_article(existing_url, article)
+                                if success:
+                                    updated_articles.append(article)
+                                    print(f"[DEBUG] 既存記事を更新: {article.get('title', '')[:50]}... (新: {article.get('source', '')} > 既存: {existing_article.get('source', '')})")
+                        else:
+                            # 既存記事の方が優先度が高い場合、新しい記事を除外
+                            print(f"[DEBUG] 既存記事を優先: {article.get('title', '')[:50]}... (既存: {existing_article.get('source', '')} > 新: {article.get('source', '')})")
+                        
+                        is_duplicate_of_existing = True
+                        break
+                    except Exception as e:
+                        print(f"[記事更新エラー] 既存記事比較エラー: {e}")
+                        print(f"  existing_source: {existing_source} (type: {type(existing_source)})")
+                        print(f"  current_source: {current_source} (type: {type(current_source)})")
+                        print(f"  existing_priority: {existing_priority if 'existing_priority' in locals() else 'undefined'}")
+                        print(f"  current_priority: {current_priority if 'current_priority' in locals() else 'undefined'}")
+                        is_duplicate_of_existing = True
+                        break
+            except Exception as e:
+                print(f"[記事更新エラー] 類似度チェックエラー: {e}")
+                print(f"  article: {article.get('title', '')[:50]}...")
+                print(f"  existing_article: {existing_article.get('title', '')[:50]}...")
+                continue
         
         if not is_duplicate_of_existing:
             final_articles.append(article)
@@ -507,10 +586,11 @@ def filter_existing_yahoo_urls(articles: List[Dict[str, Any]]) -> List[Dict[str,
     """
     print(f"[DEBUG] 既存Yahoo記事URL重複チェック開始: {len(articles)}件")
     
-    # 既存のYahoo!スポーツナビ記事のURLを取得
-    from sheets.google_sheets import get_existing_urls_by_source
+    # 既存のYahoo!スポーツナビ記事のURLを取得（軽量版を使用）
+    from sheets.google_sheets import get_existing_urls_by_source, get_existing_urls_lightweight
     
     try:
+        # 軽量版を優先使用
         existing_yahoo_urls = get_existing_urls_by_source('Yahoo!スポーツナビ')
         print(f"[DEBUG] 既存Yahoo記事URL数: {len(existing_yahoo_urls)}件")
     except Exception as e:
