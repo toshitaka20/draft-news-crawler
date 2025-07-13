@@ -34,7 +34,8 @@ class SupabasePlayerLookup:
         
         if not self.dummy_mode:
             self.supabase_url = os.getenv('SUPABASE_URL')
-            self.supabase_key = os.getenv('SUPABASE_KEY')  # SUPABASE_KEYに変更
+            # サービスロールキーを優先、なければ通常のキーを使用
+            self.supabase_key = os.getenv('SUPABASE_SERVICE_ROLE_KEY') or os.getenv('SUPABASE_KEY')
             
             if not self.supabase_url or not self.supabase_key:
                 print("⚠️  Supabase環境変数が設定されていません。ダミーモードで動作します。")
@@ -182,6 +183,138 @@ class SupabasePlayerLookup:
         
         return results
 
+class SupabaseScoutCommentInserter:
+    """Supabaseにスカウトコメントを直接INSERTする機能"""
+    
+    def __init__(self, dummy_mode: bool = False):
+        self.dummy_mode = dummy_mode or not SUPABASE_AVAILABLE
+        self.player_lookup = SupabasePlayerLookup(dummy_mode=dummy_mode)
+        
+        if not self.dummy_mode:
+            self.supabase_url = os.getenv('SUPABASE_URL')
+            # サービスロールキーを優先、なければ通常のキーを使用
+            self.supabase_key = os.getenv('SUPABASE_SERVICE_ROLE_KEY') or os.getenv('SUPABASE_KEY')
+            
+            if not self.supabase_url or not self.supabase_key:
+                print("⚠️  Supabase環境変数が設定されていません。ダミーモードで動作します。")
+                self.dummy_mode = True
+            else:
+                try:
+                    self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
+                    print("✅ Supabaseクライアントを初期化しました（INSERT機能）")
+                except Exception as e:
+                    print(f"⚠️  Supabase接続エラー: {e}")
+                    print("ダミーモードで動作します。")
+                    self.dummy_mode = True
+    
+    def check_duplicate_comment(self, comment: str, scout_name: str, team_name: str) -> bool:
+        """重複コメントをチェック"""
+        if self.dummy_mode:
+            # ダミーモードでは重複チェックをスキップ
+            return False
+        
+        try:
+            # 同じコメント内容、スカウト名、球団名の組み合わせをチェック
+            response = self.supabase.table('scout_comments').select('id').eq('comment', comment).eq('scout_name', scout_name).eq('team_name', team_name).limit(1).execute()
+            
+            if response.data:
+                print(f"[重複検出] スカウト: {scout_name}, 球団: {team_name}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            print(f"[重複チェックエラー] {e}")
+            return False  # エラーの場合は重複としない
+    
+    def insert_scout_comment(self, scout_data: Dict[str, str]) -> bool:
+        """単一のスカウトコメントをINSERT"""
+        if self.dummy_mode:
+            print(f"[ダミーモード] スカウトコメントINSERT: {scout_data.get('player_name', 'Unknown')}")
+            return True
+        
+        try:
+            # 重複チェック
+            if self.check_duplicate_comment(
+                scout_data['comment'], 
+                scout_data['scout_name'], 
+                scout_data['team_name']
+            ):
+                return False  # 重複の場合はINSERTしない
+            
+            # INSERT実行
+            insert_data = {
+                'player_id': scout_data.get('player_id'),
+                'team_name': scout_data['team_name'],
+                'scout_name': scout_data['scout_name'],
+                'comment': scout_data['comment'],
+                'published_at': scout_data.get('published_at'),
+                'source_url': scout_data.get('source_url')
+            }
+            
+            response = self.supabase.table('scout_comments').insert(insert_data).execute()
+            
+            if response.data:
+                print(f"[INSERT成功] 選手: {scout_data.get('player_name', 'Unknown')}, スカウト: {scout_data['scout_name']}")
+                return True
+            else:
+                print(f"[INSERT失敗] 選手: {scout_data.get('player_name', 'Unknown')}")
+                return False
+                
+        except Exception as e:
+            print(f"[INSERTエラー] {scout_data.get('player_name', 'Unknown')}: {e}")
+            return False
+    
+    def insert_multiple_scout_comments(self, scout_rows: List[List[str]]) -> Dict[str, int]:
+        """複数のスカウトコメントを一括INSERT"""
+        if not scout_rows:
+            return {"total": 0, "inserted": 0, "duplicates": 0, "errors": 0}
+        
+        # 選手名を抽出して選手IDを一括取得
+        player_names = [row[0] for row in scout_rows if len(row) > 0]
+        player_id_map = self.player_lookup.lookup_multiple_players(player_names)
+        
+        results = {"total": len(scout_rows), "inserted": 0, "duplicates": 0, "errors": 0}
+        
+        mode_text = "ダミーモード" if self.dummy_mode else "Supabase"
+        print(f"[{mode_text}] {len(scout_rows)}件のスカウトコメントをINSERT中...")
+        
+        for i, row in enumerate(scout_rows, 1):
+            if len(row) < 7:
+                results["errors"] += 1
+                continue
+            
+            player_name = row[0]
+            player_team = row[1]
+            scout_name = row[2]
+            scout_team = row[3]
+            comment_content = row[4]
+            published_at = row[5]
+            article_url = row[6]
+            
+            # 選手IDを取得
+            player_id = player_id_map.get(player_name)
+            
+            # データを正規化
+            scout_data = {
+                'player_id': player_id,
+                'player_name': player_name,
+                'team_name': scout_team.strip(),
+                'scout_name': scout_name.strip(),
+                'comment': comment_content.strip(),
+                'published_at': published_at.strip(),
+                'source_url': article_url.strip()
+            }
+            
+            # INSERT実行
+            if self.insert_scout_comment(scout_data):
+                results["inserted"] += 1
+            else:
+                results["duplicates"] += 1
+        
+        print(f"[{mode_text}] INSERT完了: {results['inserted']}件挿入, {results['duplicates']}件重複, {results['errors']}件エラー")
+        return results
+
 class SupabaseScoutCommentGenerator:
     """Supabaseと連携したスカウトコメントSQL生成機能"""
     
@@ -261,14 +394,12 @@ INSERT INTO scout_comments (
                 sql_parts.append(f"""
 -- #{i} 選手: {player_name} ({player_team}) - 未登録選手
 INSERT INTO scout_comments (
-    player_id,
     team_name,
     scout_name,
     comment,
     published_at,
     source_url
 ) VALUES (
-    NULL,
     '{scout_team}',
     '{escaped_scout_name}',
     '{escaped_comment}',
@@ -276,17 +407,11 @@ INSERT INTO scout_comments (
     '{escaped_url}'
 );""")
         
-        # 統計情報を追加
-        registered_count = len([p for p in player_id_map.values() if p is not None])
-        unregistered_count = len(player_id_map) - registered_count
-        
         sql_parts.extend([
             "",
             "COMMIT;",
             "",
             f"-- 合計 {len(scout_rows)} 件のスカウトコメント",
-            f"-- 登録済み選手: {registered_count}名",
-            f"-- 未登録選手: {unregistered_count}名",
             "",
             "-- 結果確認クエリ",
             "SELECT ",
@@ -301,14 +426,10 @@ INSERT INTO scout_comments (
             "WHERE sc.created_at > NOW() - INTERVAL '5 minutes'",
             "ORDER BY sc.created_at DESC;",
             "",
-            "-- 未登録選手のコメント一覧",
-            "SELECT ",
-            "    sc.scout_name,",
-            "    sc.team_name,",
-            "    LEFT(sc.comment, 100) as comment_preview",
-            "FROM scout_comments sc",
-            "WHERE sc.player_id IS NULL AND sc.created_at > NOW() - INTERVAL '5 minutes'",
-            "ORDER BY sc.created_at DESC;"
+            "-- 未登録選手のコメント確認",
+            "SELECT COUNT(*) as unregistered_player_comments",
+            "FROM scout_comments",
+            "WHERE player_id IS NULL AND created_at > NOW() - INTERVAL '5 minutes';"
         ])
         
         return "\n".join(sql_parts)
@@ -318,21 +439,21 @@ INSERT INTO scout_comments (
         filepath = os.path.join(self.output_dir, filename)
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(sql_content)
+        print(f"✅ SQLファイルを保存しました: {filepath}")
         return filepath
     
     def generate_resolved_sql_file(self, scout_rows: List[List[str]]) -> str:
-        """選手ID解決済みSQLファイルを生成"""
-        timestamp = now_jst().strftime("%Y%m%d_%H%M%S")
-        
-        # 選手ID解決済みINSERT SQL生成
-        insert_sql = self.generate_insert_sql_with_resolved_ids(scout_rows)
-        mode_suffix = "dummy" if self.player_lookup.dummy_mode else "supabase"
-        filepath = self.save_sql_file(insert_sql, f"scout_comments_resolved_{mode_suffix}_{timestamp}.sql")
-        
-        print(f"[SQL生成完了] 選手ID解決済みファイル: {filepath}")
-        return filepath
+        """選手ID解決済みのSQLファイルを生成"""
+        sql_content = self.generate_insert_sql_with_resolved_ids(scout_rows)
+        filename = f"scout_comments_resolved_{now_jst().strftime('%Y%m%d_%H%M%S')}.sql"
+        return self.save_sql_file(sql_content, filename)
 
 def generate_scout_comment_sql_with_resolved_ids(scout_rows: List[List[str]], dummy_mode: bool = False) -> str:
-    """メイン関数：選手ID解決済みスカウトコメントSQL生成"""
+    """選手ID解決済みのスカウトコメントSQLを生成（簡易版）"""
     generator = SupabaseScoutCommentGenerator(dummy_mode=dummy_mode)
-    return generator.generate_resolved_sql_file(scout_rows) 
+    return generator.generate_insert_sql_with_resolved_ids(scout_rows)
+
+def insert_scout_comments_directly(scout_rows: List[List[str]], dummy_mode: bool = False) -> Dict[str, int]:
+    """スカウトコメントをデータベースに直接INSERT"""
+    inserter = SupabaseScoutCommentInserter(dummy_mode=dummy_mode)
+    return inserter.insert_multiple_scout_comments(scout_rows) 

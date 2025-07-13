@@ -7,7 +7,7 @@ from typing import List, Dict, Any
 from scraper.yahoo_sponavi import YahooSponaviScraper
 from ai.gemini import process_articles_with_ai
 from sheets.google_sheets import update_sheets, get_existing_urls_by_source
-from database.supabase_client import generate_scout_comment_sql_with_resolved_ids
+from database.supabase_client import insert_scout_comments_directly
 from utils import filter_yahoo_against_existing, smart_deduplicate_articles, contains_keywords
 from config import YAHOO_SPONAVI_URLS, YAHOO_SPONAVI_MAX_ARTICLES, AI_KEYWORDS
 
@@ -92,8 +92,8 @@ def main():
         # 5. 全記事をマージ
         all_processed = processed_keyword_articles + no_keyword_articles
         
-        # 6. スカウトコメントをSupabase用SQLに変換
-        print("\n4. スカウトコメントSQL生成中...")
+        # 6. スカウトコメントをデータベースに直接INSERT
+        print("\n4. スカウトコメントデータベース挿入中...")
         all_scout_rows = []
         for article in all_processed:
             scout_rows = article.get('scout_rows', [])
@@ -103,14 +103,15 @@ def main():
         if all_scout_rows:
             print(f"スカウトコメント総数: {len(all_scout_rows)}件")
             try:
-                sql_file = generate_scout_comment_sql_with_resolved_ids(all_scout_rows)
-                print(f"✅ スカウトコメントSQL生成完了: {sql_file}")
-                
-                # SQLファイルはGitHub Actionsのartifactからダウンロード可能
-                print("\n📁 SQLファイルはGitHub Actionsのartifactからダウンロードできます")
+                # データベースに直接INSERT（重複排除機能付き）
+                insert_results = insert_scout_comments_directly(all_scout_rows)
+                print(f"✅ スカウトコメントデータベース挿入完了")
+                print(f"  挿入件数: {insert_results['inserted']}件")
+                print(f"  重複除外: {insert_results['duplicates']}件")
+                print(f"  エラー件数: {insert_results['errors']}件")
                     
             except Exception as e:
-                print(f"⚠️ スカウトコメントSQL生成エラー: {e}")
+                print(f"⚠️ スカウトコメントデータベース挿入エラー: {e}")
                 print("Googleスプレッドシートの更新のみ実行します...")
         else:
             print("スカウトコメントが見つかりませんでした。")

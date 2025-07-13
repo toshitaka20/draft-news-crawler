@@ -39,15 +39,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
 
-      - name: Upload SQL files as artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: sql-files-yahoo-${{ github.run_number }}
-          path: sql_output/
-          retention-days: 3
-
-      - name: Upload logs as artifact
+            - name: Upload logs as artifact
         uses: actions/upload-artifact@v4
         if: always()
         with:
