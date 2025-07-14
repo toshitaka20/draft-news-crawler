@@ -315,7 +315,7 @@ class YahooSponaviScraper:
         for selector in date_selectors:
             date_tag = soup.select_one(selector)
             if date_tag:
-                date_str = date_tag.get('datetime') or date_tag.get_text()
+                date_str = str(date_tag.get('datetime', '')) or str(date_tag.get_text())
                 if date_str:
                     formatted_date = format_date_with_time(clean_text(date_str))
                     print(f"[DEBUG] {selector}から日付取得: {formatted_date}")
@@ -326,19 +326,40 @@ class YahooSponaviScraper:
     def _extract_body(self, soup: BeautifulSoup) -> str:
         """記事本文を抽出（Yahoo!ニュース専用）"""
         
-        # まず従来の方法で本文を抽出
-        body_selectors = [
-            # Yahoo!ニュースの本文セレクター
+        # article_bodyクラスから本文を抽出（最優先）
+        article_body_selectors = [
+            '.article_body',  # デバッグで確認済み
+            '.article-body',
             '.articleBody',
             '.sc-article-body',
             '.highres-article-body',
-            '.article-body',
             '.newsBody',
             '.article-content',
             '.content',
             '[data-module="ArticleBody"]',
-            '.news-text',
-            # 段落セレクター
+            '.news-text'
+        ]
+        
+        for selector in article_body_selectors:
+            elements = soup.select(selector)
+            if elements:
+                print(f"[DEBUG] セレクター '{selector}' で {len(elements)} 件発見")
+                body_parts = []
+                for elem in elements:
+                    # article_body内のテキストのみを抽出
+                    text = self._extract_text_from_article_body(elem)
+                    if text and len(text) > 10:  # 10文字以上の意味のある文章のみ
+                        body_parts.append(text)
+                        print(f"[DEBUG] 本文抽出成功: {len(text)}文字")
+                
+                if body_parts:
+                    full_body = '\n'.join(body_parts)
+                    if len(full_body) > 100:  # 100文字以上の場合は有効な本文とみなす
+                        print(f"[DEBUG] セレクター '{selector}' から本文取得: {full_body[:100]}...")
+                        return full_body
+        
+        # 従来の方法（フォールバック）
+        body_selectors = [
             '.articleBody p',
             '.sc-article-body p',
             '.newsBody p', 
@@ -353,7 +374,7 @@ class YahooSponaviScraper:
             if elements:
                 body_parts = []
                 for elem in elements:
-                    text = clean_text(elem.get_text())
+                    text = clean_text(str(elem.get_text()))
                     if text and len(text) > 10:  # 10文字以上の意味のある文章のみ
                         body_parts.append(text)
                 
@@ -363,87 +384,75 @@ class YahooSponaviScraper:
                         print(f"[DEBUG] セレクター '{selector}' から本文取得: {full_body[:100]}...")
                         return full_body
         
-        # article要素から本文を抽出
-        article_elem = soup.find('article')
-        if article_elem:
-            # article要素内のテキストを取得
-            article_text = article_elem.get_text(strip=True)
-            
-            # 不要な部分を除去
-            import re
-            # 日付部分を除去（「7/12(土) 15:19配信」のような部分）
-            article_text = re.sub(r'\d+/\d+\([月火水木金土日]\)\s*\d+:\d+配信', '', article_text)
-            article_text = re.sub(r'\d+/\d+\([月火水木金土日]\)\s*\d+:\d+', '', article_text)
-            
-            # 不要な情報を除去
-            article_text = re.sub(r'写真はイメージ', '', article_text)
-            article_text = re.sub(r'Yahoo!ニュースのすべての機能を利用するためには.*?こちら', '', article_text, flags=re.DOTALL)
-            article_text = re.sub(r'JavaScript.*?設定を変更', '', article_text, flags=re.DOTALL)
-            
-            # タイトル部分を記事本文から除去（最初の行は通常タイトル）
-            lines = article_text.split('\n')
-            if len(lines) > 1:
-                # 最初の行（タイトル）を除去
-                body_lines = []
-                for line in lines[1:]:
-                    line = line.strip()
-                    if line and len(line) > 5:  # 5文字以上の意味のある行のみ
-                        body_lines.append(line)
-                
-                if body_lines:
-                    full_body = '\n'.join(body_lines)
-                    if len(full_body) > 100:  # 100文字以上の場合は有効な本文とみなす
-                        print(f"[DEBUG] article要素から本文取得: {full_body[:100]}...")
-                        return full_body
-        
-        # 長い段落を抽出（段落数の制限を大幅に増やす）
-        all_paragraphs = soup.find_all('p')
-        long_paragraphs = []
-        
-        for p in all_paragraphs:
-            text = clean_text(p.get_text())
-            if len(text) > 20:  # 20文字以上の段落のみ
-                long_paragraphs.append(text)
-        
-        # 不要な段落を除去
-        filtered_paragraphs = []
-        for text in long_paragraphs:
-            if ('JavaScript' not in text and 
-                '機能を利用するため' not in text and
-                '設定を変更する方法' not in text and
-                'Cookie' not in text and
-                'プライバシー' not in text and
-                '利用規約' not in text and
-                '広告' not in text and
-                len(text) > 20):  # より長い段落のみ
-                filtered_paragraphs.append(text)
-        
-        # 段落数の制限を大幅に増やす（5個→20個）
-        if len(filtered_paragraphs) >= 1:
-            full_body = '\n'.join(filtered_paragraphs[:20])  # 最初の20段落まで
-            if len(full_body) > 100:  # 100文字以上の場合は有効な本文とみなす
-                print(f"[DEBUG] 段落抽出から本文取得: {full_body[:100]}...")
-                return full_body
-        
-        # 最終フォールバック: メタタグから取得（短い要約でも何もないよりは良い）
+        # 最終フォールバック: メタタグから取得
         meta_desc = soup.find('meta', attrs={'name': 'description'})
         if meta_desc:
-            description = meta_desc.get('content', '')
+            description = str(meta_desc.get('content', ''))
             if description and len(description) > 50:
                 print(f"[DEBUG] メタタグから本文取得（フォールバック）: {description[:100]}...")
                 return description
         
-        # OGタグのdescriptionも試す
-        og_desc = soup.find('meta', attrs={'property': 'og:description'})
-        if og_desc:
-            description = og_desc.get('content', '')
-            if description and len(description) > 50:
-                print(f"[DEBUG] OGタグから本文取得（フォールバック）: {description[:100]}...")
-                return description
-        
         return ''
+    
+    def _extract_text_from_article_body(self, article_body_elem) -> str:
+        """article_body要素から本文テキストを抽出（Yahoo!ニュース専用）"""
+        
+        if not article_body_elem:
+            return ''
+        
+        # 不要な要素を削除（コピーを作成）
+        elem_copy = article_body_elem.__copy__()
+        
+        # 不要な要素を削除
+        unwanted_selectors = [
+            'a[href*="/articles/"]',  # 関連記事リンク
+            '.related-articles',
+            '.related-links', 
+            '.recommend-articles',
+            '.article-recommend',
+            '.sc-recommend',
+            '.yjSlinkDirectlinkHl',  # リンクハイライト
+            'script',
+            'style',
+            'noscript',
+            '.advertisement',
+            '.ad',
+            '.banner',
+            '.social-share',
+            '.share-buttons',
+            '.article-footer',
+            '.article-meta',
+            '.article-info'
+        ]
+        
+        for selector in unwanted_selectors:
+            unwanted_elems = elem_copy.select(selector)
+            for elem in unwanted_elems:
+                elem.decompose()
+        
+        # テキストを抽出
+        from utils import clean_text
+        import re
+        
+        text = clean_text(str(elem_copy.get_text()))
+        
+        # 基本的な不要な文字列を除去（過度に厳しくしない）
+        text = re.sub(r'\d+/\d+\([月火水木金土日]\)\s*\d+:\d+配信', '', text)
+        text = re.sub(r'写真はイメージ', '', text)
+        text = re.sub(r'Yahoo!ニュースのすべての機能を利用するためには.*?こちら', '', text, flags=re.DOTALL)
+        text = re.sub(r'JavaScript.*?設定を変更', '', text, flags=re.DOTALL)
+        
+        # 複数の改行を単一の改行に統一
+        text = re.sub(r'\n\s*\n', '\n', text)
+        
+        # 前後の空白を除去
+        text = text.strip()
+        
+        print(f"[DEBUG] _extract_text_from_article_body: {len(text)}文字抽出")
+        
+        return text
 
-def fetch_yahoo_sponavi_articles(category: str, max_articles: int = 50, exclude_urls: Set[str] = None) -> List[Dict[str, Any]]:
+def fetch_yahoo_sponavi_articles(category: str, max_articles: int = 50, exclude_urls: Optional[Set[str]] = None) -> List[Dict[str, Any]]:
     """
     Yahoo!スポーツナビの記事を取得（単一カテゴリ）
     """
@@ -490,7 +499,7 @@ def fetch_yahoo_sponavi_articles(category: str, max_articles: int = 50, exclude_
     print(f"[INFO] Yahoo!スポーツナビ {category}: {len(detailed_articles)}件取得完了")
     return detailed_articles
 
-def fetch_all_yahoo_sponavi_articles(exclude_urls: Set[str] = None) -> List[Dict[str, Any]]:
+def fetch_all_yahoo_sponavi_articles(exclude_urls: Optional[Set[str]] = None) -> List[Dict[str, Any]]:
     """
     Yahoo!スポーツナビの全カテゴリ記事を取得
     """
