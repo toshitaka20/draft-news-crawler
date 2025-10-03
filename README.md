@@ -60,3 +60,4 @@ python main_new.py
 
 - Google Sheets: 記事データとスカウトコメント
 - コンソール: 実行ログと統計情報
+- 
