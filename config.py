@@ -34,7 +34,7 @@ CREDENTIALS_FILE = 'credentials.json'
 
 # Gemini API設定
 GEMINI_API_KEY = os.getenv('GOOGLE_GENAI_API_KEY', '')
-GEMINI_MODEL = 'gemini-2.0-flash'
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.1-flash-lite')
 
 # スクレイピング設定
 MAX_ARTICLES_PER_SOURCE = 20
