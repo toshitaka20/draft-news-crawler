@@ -5,14 +5,7 @@ Gemini API連携・コメント抽出
 import google.generativeai as genai  # type: ignore
 import csv
 from typing import List, Dict, Any, Optional
-from config import GEMINI_API_KEY, GEMINI_MODEL, AI_KEYWORDS
-
-def contains_keywords(text: str, keywords: List[str]) -> bool:
-    """
-    テキストにキーワードが含まれているかチェック
-    """
-    text_lower = text.lower()
-    return any(keyword.lower() in text_lower for keyword in keywords)
+from config import GEMINI_API_KEY, GEMINI_MODEL
 
 def setup_gemini():
     """
@@ -32,16 +25,16 @@ def extract_scout_comments_with_gemini(article_text: str, title: str, published:
         model = setup_gemini()
         
         prompt = f"""
-あなたはプロ野球のスカウトコメント抽出AIです。
-以下の記事本文から、プロ野球・MLB・侍ジャパン監督などの「球団スカウト」が特定の選手について述べた評価コメント・発言を抽出してください。
+あなたはプロ野球のドラフト評価コメント抽出AIです。
+以下の記事本文から、NPB・MLB球団のスカウト、編成担当、GMなどのドラフト評価担当者が、特定の選手について述べた評価コメント・発言だけを抽出してください。
 
 【重要：抽出対象の厳密な定義】
 1. 発言者：以下のいずれかに該当する人物のみ
    - プロ野球球団のスカウト・スカウト部長・スカウト担当者
-   - プロ野球球団の監督・コーチ・GM・球団関係者
-   - MLB球団のスカウト・監督・コーチ・GM
-   - 侍ジャパンの監督・コーチ・関係者
-   - 明確に「スカウト」「GM」と明記されている人物
+   - プロ野球球団の編成部長・編成副部長・編成部部長・編成本部長・編成本部長代理・編成本部参与・編成ディレクター・球団本部長・球団本部副本部長・統括本部長・GM・GM補佐・GM特別補佐・CBOなどドラフトや編成に関わる球団関係者
+   - 役職名が「チーフ」「チーフ補佐」「グループ長」「ディレクター」「スーパーバイザー」「アドバイザー」「顧問」「参与」「主任」「補佐」「デスク」「マネージャー」など曖昧でも、文脈上スカウト部・編成部・球団本部・育成/ドラフト担当である人物
+   - MLB球団のスカウト・GM・編成担当者
+   - 明確に「スカウト」「GM」「編成」「球団本部」と明記されている人物
 
 2. 発言内容：以下の条件をすべて満たすもののみ
    - 選手の能力・技術・特徴・評価についての具体的な発言
@@ -57,6 +50,10 @@ def extract_scout_comments_with_gemini(article_text: str, title: str, published:
   - 選手の感想や心境を表す発言
 - 記者・ライターの分析・評価・推測
 - ファン・一般の人の意見
+- 高校・大学・社会人・独立リーグなど、選手所属チームの監督・コーチ・部長・関係者の発言
+- プロ野球球団の一軍監督・二軍監督・コーチの発言
+- 侍ジャパン監督・コーチ・関係者の発言
+- 解説者・OB・元監督・元選手の発言
 - 明確な発言ではなく推測・憶測の記述
 - 選手名が特定できない曖昧な発言
 - 発言者名・役職が不明な発言
@@ -75,15 +72,18 @@ def extract_scout_comments_with_gemini(article_text: str, title: str, published:
 
 【発言者の特定・表記ルール】
 - 発言者名は「苗字＋役職名」の形式で表記してください
-- 例：「田中スカウト」「佐藤監督」「山田GM」「鈴木統括本部長」「高橋スカウト部長」
+- 例：「田中スカウト」「山田GM」「鈴木統括本部長」「高橋スカウト部長」
 - 「〜スカウトが〜と評価」→ 「○○スカウト」として抽出
-- 「〜監督が〜と語る」→ 「○○監督」として抽出  
 - 「〜GMが〜とコメント」→ 「○○GM」として抽出
 - 「〜統括本部長が〜と語る」→ 「○○統括本部長」として抽出
 - 「〜スカウト部長が〜と評価」→ 「○○スカウト部長」として抽出
 - 「〜編成部長が〜とコメント」→ 「○○編成部長」として抽出
-- 役職のみ明記されている場合は「匿名スカウト」「匿名監督」「匿名GM」などで表記
+- 「〜編成本部長が〜と称賛」→ 「○○編成本部長」として抽出
+- 「〜編成本部参与が〜と評価」→ 「○○編成本部参与」として抽出
+- 「〜スーパーバイザーが〜と評価」「〜チーフが〜と話した」など、球団のスカウト・編成文脈の肩書きなら抽出
+- 役職のみ明記されている場合は「匿名スカウト」「匿名GM」「匿名編成部長」などで表記
 - フルネームが記載されている場合でも苗字のみ使用（例：田中太郎スカウト → 田中スカウト）
+- 「監督」「コーチ」の肩書きしかない発言者は抽出しない
 
 【球団名の英語表記ルール】
 - 日本プロ野球球団は英語で表記してください
@@ -101,7 +101,6 @@ def extract_scout_comments_with_gemini(article_text: str, title: str, published:
 - 楽天 → eagles
 - メジャーリーグ球団（匿名） → MLB
 - メジャーリーグ球団（名前あり） → その球団名（例：マリナーズ）
-- 侍ジャパン → 侍ジャパン
 - その他の球団・組織 → other
 
 【出力カラム】
@@ -141,15 +140,15 @@ URL: {link}
 
 def process_articles_with_ai(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    記事リストにAIコメント抽出を適用（キーワードがある記事のみ）
+    記事リストにAIコメント抽出を適用（スカウトコメント候補記事のみ）
     """
     processed_articles = []
     keyword_count = 0  # ← カウント用
     
     for article in articles:
         scout_rows = []  # ← 各記事ごとに初期化
-        # キーワードがある記事のみAI処理を実行
-        has_keywords = article.get('has_keywords', False)
+        # スカウトコメント候補がある記事のみAI処理を実行
+        has_keywords = article.get('has_scout_comment_candidate', article.get('has_keywords', False))
         
         if has_keywords:
             keyword_count += 1  # ← カウント
@@ -190,12 +189,12 @@ def process_articles_with_ai(articles: List[Dict[str, Any]]) -> List[Dict[str, A
                 print(f"[エラー] 記事AI処理失敗: {article.get('title', '')} - {e}")
                 article['scout_comments'] = "エラー: 処理に失敗しました"
         else:
-            # キーワードがない記事はスカウトコメントなし
-            article['scout_comments'] = "キーワードなし"
-            print(f"[DEBUG] キーワードなし、AI処理スキップ: {article.get('title', '')[:50]}...")
+            # 候補がない記事はスカウトコメントなし
+            article['scout_comments'] = "スカウトコメント候補なし"
+            print(f"[DEBUG] スカウトコメント候補なし、AI処理スキップ: {article.get('title', '')[:50]}...")
         
         article['scout_rows'] = scout_rows  # ← 各記事ごとにセット
         processed_articles.append(article)
     
-    print(f"[DEBUG] has_keywords=True の記事数: {keyword_count}")
+    print(f"[DEBUG] has_scout_comment_candidate=True の記事数: {keyword_count}")
     return processed_articles 

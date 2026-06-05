@@ -11,8 +11,8 @@ import json
 import re
 from typing import List, Dict, Any, Set, Optional
 from bs4 import BeautifulSoup
-from config import REQUEST_TIMEOUT, AI_KEYWORDS
-from utils import clean_text, format_date_with_time, contains_keywords
+from config import REQUEST_TIMEOUT
+from utils import clean_text, format_date_with_time, annotate_article_signals
 
 class YahooSponaviScraper:
     def __init__(self):
@@ -486,10 +486,10 @@ def fetch_yahoo_sponavi_articles(category: str, max_articles: int = 50, exclude_
         # キーワードチェック
         if article['body']:
             full_text = f"{article['title']}\n\n{article['body']}"
-            article['has_keywords'] = contains_keywords(full_text, AI_KEYWORDS)
+            annotate_article_signals(article)
             
             if article['has_keywords']:
-                print(f"[DEBUG] キーワード記事発見: {article['title'][:50]}...")
+                print(f"[DEBUG] AI/注目度候補記事発見: {article['title'][:50]}...")
         
         detailed_articles.append(article)
         

@@ -7,8 +7,8 @@ import requests
 import time
 from typing import List, Dict, Any
 from bs4 import BeautifulSoup
-from config import NIKKAN_FEEDS, MAX_ARTICLES_PER_SOURCE, SLEEP_SECONDS, REQUEST_TIMEOUT, SCOUT_KEYWORDS, AI_KEYWORDS
-from utils import clean_text, format_date_with_time, contains_keywords
+from config import NIKKAN_FEEDS, MAX_ARTICLES_PER_SOURCE, SLEEP_SECONDS, REQUEST_TIMEOUT
+from utils import clean_text, format_date_with_time, annotate_article_signals
 
 def fetch_nikkan_article_body(url: str) -> str:
     """
@@ -75,24 +75,21 @@ def fetch_nikkan_sports_articles(rss_url: str, max_articles: int = MAX_ARTICLES_
                 # 記事本文を取得
                 body = fetch_nikkan_article_body(url)
                 
-                # キーワードチェック（タイトルと本文で）
-                full_text = f"{title}\n\n{body}"
-                has_keywords = contains_keywords(full_text, AI_KEYWORDS)
-                
-                articles.append({
+                article = {
                     'title': title,
                     'url': url,
                     'date': date,
                     'body': body,
                     'source': '日刊スポーツ',
-                    'category': category,
-                    'has_keywords': has_keywords
-                })
+                    'category': category
+                }
+                annotate_article_signals(article)
+                articles.append(article)
                 
-                if has_keywords:
-                    print(f"[DEBUG] キーワード記事発見: {title}")
+                if article.get('has_keywords'):
+                    print(f"[DEBUG] AI/注目度候補記事発見: {title}")
                 else:
-                    print(f"[DEBUG] キーワードなし: {title}")
+                    print(f"[DEBUG] 候補なし: {title}")
                 
                 time.sleep(SLEEP_SECONDS)
                 

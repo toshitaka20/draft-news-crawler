@@ -78,9 +78,9 @@ def main():
             print("重複除去後、新しい記事が見つかりませんでした。")
             return
         
-        # 7. AIコメント抽出（キーワードあり記事のみ）
+        # 7. AIコメント抽出（スカウトコメント候補記事のみ）
         print("\n7. AIコメント抽出中...")
-        keyword_articles = [a for a in unique_articles if a.get('has_keywords', False)]
+        keyword_articles = [a for a in unique_articles if a.get('has_scout_comment_candidate', False)]
         
         if keyword_articles:
             processed_keyword_articles = process_articles_with_ai(keyword_articles)
@@ -89,10 +89,10 @@ def main():
             processed_keyword_articles = []
             print("キーワード該当記事なし")
         
-        # 8. キーワードなし記事にもscout_comments/scout_rowsをセット
-        no_keyword_articles = [a for a in unique_articles if not a.get('has_keywords', False)]
+        # 8. AI対象外記事にもscout_comments/scout_rowsをセット
+        no_keyword_articles = [a for a in unique_articles if not a.get('has_scout_comment_candidate', False)]
         for a in no_keyword_articles:
-            a['scout_comments'] = "キーワードなし"
+            a['scout_comments'] = "スカウトコメント候補なし"
             a['scout_rows'] = []
         
         # 9. 全記事をマージ
@@ -132,10 +132,12 @@ def main():
         # 結果サマリー
         sources = {}
         scout_comment_count = 0
+        attention_signal_count = 0
         for article in all_processed:
             source = article.get('source', '不明')
             sources[source] = sources.get(source, 0) + 1
             scout_comment_count += len(article.get('scout_rows', []))
+            attention_signal_count += len(article.get('attention_rows', []))
         
         print("\n=== ソース別記事数 ===")
         for source, count in sources.items():
@@ -143,6 +145,7 @@ def main():
         
         print(f"\n=== スカウトコメント統計 ===")
         print(f"スカウトコメント総数: {scout_comment_count}件")
+        print(f"注目度シグナル総数: {attention_signal_count}件")
         
         # スカウトコメントの内訳
         if scout_comment_count > 0:

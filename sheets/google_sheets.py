@@ -107,6 +107,35 @@ def setup_scout_sheet():
         print(f"[エラー] スカウトシート設定失敗: {e}")
         raise
 
+def setup_attention_sheet():
+    """
+    視察・注目度シートの設定
+    """
+    try:
+        spreadsheet = setup_google_sheets()
+
+        try:
+            attention_sheet = get_worksheet("AttentionSignals")
+        except:
+            attention_sheet = spreadsheet.add_worksheet(title="AttentionSignals", rows=1000, cols=15)
+            _worksheet_cache["AttentionSignals"] = attention_sheet
+
+        headers = [
+            '日付', 'ソース', 'カテゴリ', 'タイトル', '記事URL',
+            '視察球団数', '視察人数', '視察球団名',
+            'NPB視察あり', 'MLB視察あり', '注目度スコア', '根拠文'
+        ]
+
+        existing_values = attention_sheet.get_all_values()
+        if not existing_values:
+            attention_sheet.append_row(headers)
+
+        return attention_sheet
+
+    except Exception as e:
+        print(f"[エラー] 注目度シート設定失敗: {e}")
+        raise
+
 def update_sheets(articles: List[Dict[str, Any]]):
     """
     記事データをGoogle Sheetsに更新（メインシートとスカウトシート）
@@ -131,6 +160,7 @@ def update_sheets(articles: List[Dict[str, Any]]):
         # データ行を準備
         rows = []
         all_scout_rows = []  # 全スカウトコメント行
+        all_attention_rows = []  # 全視察・注目度行
         
         for article in articles:
             # キーワードフラグを設定
@@ -154,6 +184,8 @@ def update_sheets(articles: List[Dict[str, Any]]):
             # スカウトコメント行を収集
             scout_rows = article.get('scout_rows', [])
             all_scout_rows.extend(scout_rows)
+            attention_rows = article.get('attention_rows', [])
+            all_attention_rows.extend(attention_rows)
         
         # 既存データを取得
         existing_values = worksheet.get_all_values()
@@ -161,6 +193,7 @@ def update_sheets(articles: List[Dict[str, Any]]):
         # ヘッダーが存在しない場合は追加
         if not existing_values:
             worksheet.append_row(headers)
+            existing_values = [headers]
         
         # 順番で重複チェック（URL列は5番目=インデックス4）
         existing_urls = set()
@@ -268,8 +301,49 @@ def update_sheets(articles: List[Dict[str, Any]]):
             except Exception as e:
                 print(f"[警告] スカウトコメント追加中にエラーが発生しました: {e}")
                 print("残りのスカウトコメントは次回実行時に追加されます")
+
+        # 注目度シートに視察情報を追加
+        if all_attention_rows:
+            seen_attention = set()
+            deduped_attention_rows = []
+            for row in all_attention_rows:
+                row_tuple = tuple(row)
+                if row_tuple not in seen_attention:
+                    seen_attention.add(row_tuple)
+                    deduped_attention_rows.append(row)
+
+            def add_attention_rows():
+                attention_sheet = setup_attention_sheet()
+                existing_attention_values = attention_sheet.get_all_values()
+                existing_keys = set()
+                if len(existing_attention_values) > 1:
+                    for existing_row in existing_attention_values[1:]:
+                        if len(existing_row) > 11:
+                            existing_keys.add((existing_row[4], existing_row[11]))
+
+                new_attention_rows = []
+                for row in deduped_attention_rows:
+                    key = (row[4], row[11]) if len(row) > 11 else tuple(row)
+                    if key not in existing_keys:
+                        new_attention_rows.append(row)
+
+                if new_attention_rows:
+                    BATCH_SIZE = 50
+                    for i in range(0, len(new_attention_rows), BATCH_SIZE):
+                        batch = new_attention_rows[i:i+BATCH_SIZE]
+                        attention_sheet.append_rows(batch)
+                        print(f"[DEBUG] 注目度シグナル バッチ {i//BATCH_SIZE + 1}: {len(batch)}件追加")
+                        time.sleep(0.5)
+                else:
+                    print("[DEBUG] 新しい注目度シグナルはありませんでした")
+
+            try:
+                safe_sheet_operation(add_attention_rows)
+            except Exception as e:
+                print(f"[警告] 注目度シグナル追加中にエラーが発生しました: {e}")
+                print("残りの注目度シグナルは次回実行時に追加されます")
         
-        print(f"[DEBUG] Google Sheets更新完了: {len(articles)}件の記事, {len(all_scout_rows)}件のスカウトコメント")
+        print(f"[DEBUG] Google Sheets更新完了: {len(articles)}件の記事, {len(all_scout_rows)}件のスカウトコメント, {len(all_attention_rows)}件の注目度シグナル")
         
     except FileNotFoundError:
         print("[警告] credentials.jsonが見つかりません。Google Sheets更新をスキップします。")

@@ -8,8 +8,8 @@ from scraper.yahoo_sponavi import YahooSponaviScraper
 from ai.gemini import process_articles_with_ai
 from sheets.google_sheets import update_sheets, get_existing_urls_by_source
 from database.supabase_client import insert_scout_comments_directly
-from utils import filter_yahoo_against_existing, smart_deduplicate_articles, contains_keywords
-from config import YAHOO_SPONAVI_URLS, YAHOO_SPONAVI_MAX_ARTICLES, AI_KEYWORDS
+from utils import filter_yahoo_against_existing, smart_deduplicate_articles, annotate_article_signals
+from config import YAHOO_SPONAVI_URLS, YAHOO_SPONAVI_MAX_ARTICLES
 
 def main():
     """
@@ -45,7 +45,7 @@ def main():
                         article['title'] = title
                         article['body'] = body
                         article['date'] = date or article.get('date', '')
-                        article['has_keywords'] = contains_keywords(f"{title} {body}", AI_KEYWORDS)
+                        annotate_article_signals(article)
                         detailed_articles.append(article)
                     else:
                         print(f"[DEBUG] 本文取得失敗のため除外: {article.get('url', '')}")
@@ -77,9 +77,9 @@ def main():
             print("重複除去後、新しい記事が見つかりませんでした。")
             return
         
-        # 3. AIコメント抽出（キーワードあり記事のみ）
+        # 3. AIコメント抽出（スカウトコメント候補記事のみ）
         print("\n3. AIコメント抽出中...")
-        keyword_articles = [a for a in deduplicated_articles if a.get('has_keywords', False)]
+        keyword_articles = [a for a in deduplicated_articles if a.get('has_scout_comment_candidate', False)]
         
         if keyword_articles:
             processed_keyword_articles = process_articles_with_ai(keyword_articles)
@@ -88,10 +88,10 @@ def main():
             processed_keyword_articles = []
             print("キーワード該当記事なし")
         
-        # 4. キーワードなし記事にもscout_comments/scout_rowsをセット
-        no_keyword_articles = [a for a in deduplicated_articles if not a.get('has_keywords', False)]
+        # 4. AI対象外記事にもscout_comments/scout_rowsをセット
+        no_keyword_articles = [a for a in deduplicated_articles if not a.get('has_scout_comment_candidate', False)]
         for a in no_keyword_articles:
-            a['scout_comments'] = "キーワードなし"
+            a['scout_comments'] = "スカウトコメント候補なし"
             a['scout_rows'] = []
         
         # 5. 全記事をマージ
@@ -131,10 +131,12 @@ def main():
         # 結果サマリー
         sources = {}
         scout_comment_count = 0
+        attention_signal_count = 0
         for article in all_processed:
             source = article.get('source', '不明')
             sources[source] = sources.get(source, 0) + 1
             scout_comment_count += len(article.get('scout_rows', []))
+            attention_signal_count += len(article.get('attention_rows', []))
         
         print("\n=== ソース別記事数 ===")
         for source, count in sources.items():
@@ -142,6 +144,7 @@ def main():
         
         print(f"\n=== スカウトコメント統計 ===")
         print(f"スカウトコメント総数: {scout_comment_count}件")
+        print(f"注目度シグナル総数: {attention_signal_count}件")
         
         # スカウトコメントの内訳
         if scout_comment_count > 0:

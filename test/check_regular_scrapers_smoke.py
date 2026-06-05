@@ -87,12 +87,15 @@ def main() -> None:
 
         for i, article in enumerate(articles, 1):
             body_length = len(article.get("body", ""))
-            keyword = "あり" if article.get("has_keywords") else "なし"
+            scout_candidate = "あり" if article.get("has_scout_comment_candidate") else "なし"
+            attention_candidate = "あり" if article.get("has_attention_candidate") else "なし"
             print(f"[{i}] {article.get('title', '')}")
             print(f"URL: {article.get('url', '')}")
             print(f"日付: {article.get('date', '')}")
             print(f"本文文字数: {body_length}")
-            print(f"キーワード: {keyword}")
+            print(f"スカウトコメント候補: {scout_candidate}")
+            print(f"注目度候補: {attention_candidate}")
+            print(f"注目度シグナル数: {len(article.get('attention_rows', []))}")
 
     print(f"\n合計取得記事数: {total}")
     if failures:

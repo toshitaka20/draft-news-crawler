@@ -3,7 +3,7 @@
 """
 
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 import hashlib
@@ -15,6 +15,238 @@ def contains_keywords(text: str, keywords: List[str]) -> bool:
     """
     text_lower = text.lower()
     return any(keyword.lower() in text_lower for keyword in keywords)
+
+SCOUT_COMMENT_ROLE_PATTERN = re.compile(
+    r'(スカウト[\w一-龥ァ-ンー・／兼]*|アマスカウト[\w一-龥ァ-ンー・／兼]*|'
+    r'編成[\w一-龥ァ-ンー・／兼]*|球団本部[\w一-龥ァ-ンー・／兼]*|'
+    r'統括[\w一-龥ァ-ンー・／兼]*|育成Gマネージャー|スカウトGマネージャー|'
+    r'スカウトGディレクター|アマスカウトGディレクター|'
+    r'GM|ＧＭ|CBO|ＣＢＯ|ゼネラルマネジャー|球団関係者|'
+    r'MLBスカウト|メジャースカウト)'
+)
+SCOUT_AFFILIATED_ROLE_PATTERN = re.compile(
+    r'(チーフ|チーフ補佐|投手チーフ|グループ長|ディレクター|'
+    r'スーパーバイザー|アドバイザー|顧問|参与|主任|補佐|デスク|'
+    r'本部長|副本部長|部長|副部長|マネージャー)'
+)
+SCOUT_COMMENT_VERB_PATTERN = re.compile(
+    r'(評価|絶賛|太鼓判|コメント|話した|語った|評した|称賛|注目|マーク)'
+)
+ATTENTION_PATTERN = re.compile(
+    r'(視察|集結|熱視線|スカウト陣|スカウトが訪れ|スカウト.*詰めかけ|'
+    r'姿を見せ|姿も見せ|姿を現し|姿も現し|'
+    r'\d+球団|[０-９]+球団|全球団|12球団|ＮＰＢ|NPB|MLB|メジャー)'
+)
+JAPANESE_TEAM_NAMES = [
+    '巨人', '阪神', '中日', '広島', 'DeNA', '横浜DeNA', 'ヤクルト',
+    '西武', '日本ハム', 'ロッテ', 'ソフトバンク', 'オリックス', '楽天'
+]
+KNOWN_SCOUT_STAFF_NAMES = [
+    '福澤洋一', '木塚敦志', '宮田善久', '山本省吾', '河野亮', '近藤弘樹',
+    '岡野祐一郎', '斉藤宜之', '上村和裕', '大本将吾', '小川淳司', '森中聖雄',
+    '末永真史', '大久保勝也', '岸敬祐', '武田康', '藤田和男', '丸山泰嗣',
+    '足立祐一', '高橋憲幸', '三瀬幸司', '縞田拓弥', '後関昌彦', '有吉優樹',
+    '栗山英樹', '白井康勝', '苑田聡彦', '井上純', '田村恵', '水澤英樹',
+    '下山真二', '岩見雅紀', '長谷川竜也', '松本有史', '松岡健一', '永池恭男',
+    '阿部真宏', '河原隆一', '木村龍治', '吉野誠', '山本将道', '野本圭',
+    '篠原貴行', '加藤領健', '鞘師智也', '黒木純司', '萩田圭', '松本輝',
+    '前田俊郎', '横山道哉', '東辰弥', '榑松伸介', '山口和男', '前田忠節',
+    '山本一徳', '岡本洋介', '田中良平', '渡辺政仁', '平岡佑梧', '竹下潤',
+    '松田慎司', '石本努', '安達俊也', '柳沼強', '伊東昭光', '齊藤誠人',
+    '小松聖', '柳舘俊', '小川一夫', '大場豊千', '熊崎誠也', '岡崎大輔',
+    '作山和英', '小林敦', '稲嶺誉', '愛敬尚史', '鈴木敬洋', '稲嶺茂夫',
+    '牧田勝吾', '織田淳哉', '松本尚樹', '小山良男', '早川大輔', '山本宣史',
+    '青木宣親', '筒井和也', '葛西稔', '沖原佳典', '近藤芳久', '安藤強',
+    '部坂俊之', '円谷英俊', '高木康成', '山田潤', '加藤竜人', '榎康弘',
+    '水野雄仁', '菅野剛士', '松永幸男', '八木智哉', '平塚克洋', '音重鎮',
+    '柏田貴史', '清水昭信', '福山龍太郎', '上本達之', '高山健一', '畑山俊二',
+    '押尾健一', '後藤光貴', '十亀剣', '正津英志', '八馬幹典', '尾形佳紀',
+    '余田雄飛', '古澤勝吾', '橿渕聡', '青木高広', '中川隆治', '福元淳史',
+    '木佐貫洋', '岳野竜也', '山田正雄', '伊藤剛', '阿部健太', '竹内孝行',
+    '永井智浩', '白武佳久', '坂本晃一', '鈴木宏昌アントニー', '三家和真',
+    '大渕隆', '益田大介'
+]
+KNOWN_SCOUT_STAFF_SURNAMES = sorted(
+    {re.sub(r'\s+', '', name)[:2] for name in KNOWN_SCOUT_STAFF_NAMES if len(re.sub(r'\s+', '', name)) >= 2},
+    key=len,
+    reverse=True
+)
+
+KANJI_NUMBERS = {
+    '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6,
+    '七': 7, '八': 8, '九': 9, '十': 10, '十一': 11, '十二': 12
+}
+
+
+def _normalize_number(value: str) -> Optional[int]:
+    value = value.strip()
+    value = value.translate(str.maketrans('０１２３４５６７８９', '0123456789'))
+    if value.isdigit():
+        return int(value)
+    return KANJI_NUMBERS.get(value)
+
+
+def _normalize_person_text(text: str) -> str:
+    return re.sub(r'\s+', '', text)
+
+
+def _has_known_scout_staff(text: str) -> bool:
+    normalized = _normalize_person_text(text)
+    for name in KNOWN_SCOUT_STAFF_NAMES:
+        if name in normalized:
+            return True
+
+    for surname in KNOWN_SCOUT_STAFF_SURNAMES:
+        if surname and surname in normalized:
+            return True
+
+    return False
+
+
+def has_scout_comment_candidate(text: str) -> bool:
+    """
+    スカウト・編成・GM系の選手評価コメントがありそうな記事か判定する。
+    監督・コーチ単独のコメントはここでは候補にしない。
+    """
+    if not text:
+        return False
+
+    for role_match in SCOUT_COMMENT_ROLE_PATTERN.finditer(text):
+        window = text[role_match.start():role_match.start() + 400]
+        if SCOUT_COMMENT_VERB_PATTERN.search(window):
+            return True
+
+    normalized_text = _normalize_person_text(text)
+    for name in KNOWN_SCOUT_STAFF_NAMES:
+        pos = normalized_text.find(name)
+        if pos >= 0:
+            window = normalized_text[pos:pos + 400]
+            if (
+                (SCOUT_COMMENT_ROLE_PATTERN.search(window) or SCOUT_AFFILIATED_ROLE_PATTERN.search(window))
+                and SCOUT_COMMENT_VERB_PATTERN.search(window)
+            ):
+                return True
+
+    for sentence in re.split(r'[。\n]', text):
+        if _has_known_scout_staff(sentence) and SCOUT_AFFILIATED_ROLE_PATTERN.search(sentence):
+            window_start = text.find(sentence)
+            window = text[window_start:window_start + 400] if window_start >= 0 else sentence
+            if SCOUT_COMMENT_VERB_PATTERN.search(window):
+                return True
+
+    for sentence in re.split(r'[。\n]', text):
+        if SCOUT_COMMENT_ROLE_PATTERN.search(sentence) and SCOUT_COMMENT_VERB_PATTERN.search(sentence):
+            return True
+    return False
+
+
+def has_attention_candidate(text: str) -> bool:
+    """
+    視察球団数・視察人数・球団名など、注目度情報がありそうな記事か判定する。
+    """
+    return bool(text and ATTENTION_PATTERN.search(text))
+
+
+def calculate_attention_score(team_count: int, person_count: int, teams: List[str], has_mlb: bool, has_comment_candidate: bool) -> int:
+    score = 0
+    if team_count >= 12:
+        score = 5
+    elif team_count >= 8:
+        score = 4
+    elif team_count >= 5:
+        score = 3
+    elif team_count >= 2:
+        score = 2
+    elif teams:
+        score = 2
+    elif person_count > 0:
+        score = 1
+
+    if person_count >= 10:
+        score += 1
+    if has_mlb:
+        score += 1
+    if has_comment_candidate:
+        score += 1
+
+    return min(score, 7)
+
+
+def extract_attention_rows(article: Dict[str, Any]) -> List[List[Any]]:
+    """
+    記事から視察球団数・人数・球団名・注目度をルールベースで抽出する。
+    """
+    body = article.get('body', '') or ''
+    title = article.get('title', '') or ''
+    texts = [body] if body else []
+    if not texts:
+        texts.append(title)
+    rows = []
+
+    for text in texts:
+        for sentence in re.split(r'[。\n]', text):
+            sentence = clean_text(sentence)
+            if not sentence or not has_attention_candidate(sentence):
+                continue
+
+            team_count = 0
+            person_count = 0
+
+            if re.search(r'(全球団|12球団|十二球団)', sentence):
+                team_count = 12
+            else:
+                team_count_match = re.search(r'([0-9０-９]+|[一二三四五六七八九十十一十二]+)球団', sentence)
+                if team_count_match:
+                    team_count = _normalize_number(team_count_match.group(1)) or 0
+
+            person_match = re.search(r'([0-9０-９]+|[一二三四五六七八九十十一十二]+)人', sentence)
+            if person_match:
+                person_count = _normalize_number(person_match.group(1)) or 0
+
+            teams = []
+            for team in JAPANESE_TEAM_NAMES:
+                if team in sentence and team not in teams:
+                    teams.append(team)
+
+            has_mlb = bool(re.search(r'(MLB|ＭＬＢ|メジャー|大リーグ)', sentence))
+            has_npb = bool(re.search(r'(NPB|ＮＰＢ|プロ野球|球団|スカウト|視察)', sentence)) or bool(teams)
+            has_comment = has_scout_comment_candidate(sentence)
+
+            if not (team_count or person_count or teams or has_mlb or has_comment):
+                continue
+
+            score = calculate_attention_score(team_count, person_count, teams, has_mlb, has_comment)
+            rows.append([
+                article.get('date', ''),
+                article.get('source', ''),
+                article.get('category', ''),
+                article.get('title', ''),
+                article.get('url', ''),
+                team_count,
+                person_count,
+                ', '.join(teams),
+                'TRUE' if has_npb else 'FALSE',
+                'TRUE' if has_mlb else 'FALSE',
+                score,
+                sentence
+            ])
+
+    return rows
+
+
+def annotate_article_signals(article: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    記事にスカウトコメント候補・視察注目度候補・注目度行を付与する。
+    has_keywordsは既存処理互換のため、どちらかの候補があればTrueにする。
+    """
+    text = f"{article.get('title', '')}\n\n{article.get('body', '')}"
+    scout_candidate = has_scout_comment_candidate(text)
+    attention_candidate = has_attention_candidate(text)
+    article['has_scout_comment_candidate'] = scout_candidate
+    article['has_attention_candidate'] = attention_candidate
+    article['has_keywords'] = scout_candidate or attention_candidate
+    article['attention_rows'] = extract_attention_rows(article) if attention_candidate else []
+    return article
 
 def clean_text(text: str) -> str:
     """

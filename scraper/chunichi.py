@@ -7,8 +7,8 @@ import requests
 import time
 from typing import List, Dict, Any
 from bs4 import BeautifulSoup
-from config import MAX_ARTICLES_PER_SOURCE, SLEEP_SECONDS, REQUEST_TIMEOUT, AI_KEYWORDS
-from utils import clean_text, format_date_with_time, contains_keywords
+from config import MAX_ARTICLES_PER_SOURCE, SLEEP_SECONDS, REQUEST_TIMEOUT
+from utils import clean_text, format_date_with_time, annotate_article_signals
 
 def fetch_chunichi_article_links(list_url: str, max_articles: int = MAX_ARTICLES_PER_SOURCE) -> List[str]:
     """
@@ -85,21 +85,20 @@ def fetch_chunichi_articles(list_url: str, max_articles: int = MAX_ARTICLES_PER_
         try:
             title, date, body = fetch_chunichi_article_body(url)
             if title and body:
-                full_text = f"{title}\n\n{body}"
-                has_keywords = contains_keywords(full_text, AI_KEYWORDS)
-                articles.append({
+                article = {
                     'title': title,
                     'url': url,
                     'date': date,
                     'body': body,
                     'source': '中日スポーツ',
-                    'category': category,
-                    'has_keywords': has_keywords
-                })
-                if has_keywords:
-                    print(f"[DEBUG] キーワード記事発見: {title}")
+                    'category': category
+                }
+                annotate_article_signals(article)
+                articles.append(article)
+                if article.get('has_keywords'):
+                    print(f"[DEBUG] AI/注目度候補記事発見: {title}")
                 else:
-                    print(f"[DEBUG] キーワードなし: {title}")
+                    print(f"[DEBUG] 候補なし: {title}")
             time.sleep(sleep_sec)
         except Exception as e:
             print(f"[エラー] 中日スポーツ記事取得失敗: {url} - {e}")
