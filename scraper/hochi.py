@@ -6,7 +6,7 @@ import requests
 import time
 from typing import List, Dict, Any, Optional
 from bs4 import BeautifulSoup
-from config import HOCHI_URLS, MAX_ARTICLES_PER_SOURCE, SLEEP_SECONDS, AI_KEYWORDS
+from config import HOCHI_URLS, MAX_ARTICLES_PER_SOURCE, SLEEP_SECONDS, REQUEST_TIMEOUT, AI_KEYWORDS
 from utils import clean_text, format_date_with_time, contains_keywords
 
 def fetch_hochi_article_links(list_url: str, max_articles: int = MAX_ARTICLES_PER_SOURCE) -> List[str]:
@@ -15,7 +15,8 @@ def fetch_hochi_article_links(list_url: str, max_articles: int = MAX_ARTICLES_PE
     ul.article-list配下のaタグのみを記事URL抽出対象とする
     """
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
-    res = requests.get(list_url, headers=headers)
+    res = requests.get(list_url, headers=headers, timeout=REQUEST_TIMEOUT)
+    res.raise_for_status()
     soup = BeautifulSoup(res.text, 'html.parser')
     links: List[str] = []
     count = 0
@@ -77,7 +78,8 @@ def fetch_hochi_article_body(article_url: str) -> tuple:
     スポーツ報知の記事本文を取得
     """
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
-    res = requests.get(article_url, headers=headers)
+    res = requests.get(article_url, headers=headers, timeout=REQUEST_TIMEOUT)
+    res.raise_for_status()
     soup = BeautifulSoup(res.text, 'html.parser')
     
     print(f"[DEBUG] スポーツ報知記事取得: {article_url}")

@@ -11,7 +11,7 @@ import json
 import re
 from typing import List, Dict, Any, Set, Optional
 from bs4 import BeautifulSoup
-from config import AI_KEYWORDS
+from config import REQUEST_TIMEOUT, AI_KEYWORDS
 from utils import clean_text, format_date_with_time, contains_keywords
 
 class YahooSponaviScraper:
@@ -70,7 +70,7 @@ class YahooSponaviScraper:
         try:
             print(f"[DEBUG] Yahoo!スポーツナビ {category} 記事一覧取得: {url}")
             
-            response = self.session.get(url, timeout=15)
+            response = self.session.get(url, timeout=REQUEST_TIMEOUT)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -228,7 +228,7 @@ class YahooSponaviScraper:
         try:
             print(f"[DEBUG] 記事詳細取得: {article_url}")
             
-            response = self.session.get(article_url, timeout=15)
+            response = self.session.get(article_url, timeout=REQUEST_TIMEOUT)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')

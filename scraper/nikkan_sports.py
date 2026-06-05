@@ -7,7 +7,7 @@ import requests
 import time
 from typing import List, Dict, Any
 from bs4 import BeautifulSoup
-from config import NIKKAN_FEEDS, MAX_ARTICLES_PER_SOURCE, SLEEP_SECONDS, SCOUT_KEYWORDS, AI_KEYWORDS
+from config import NIKKAN_FEEDS, MAX_ARTICLES_PER_SOURCE, SLEEP_SECONDS, REQUEST_TIMEOUT, SCOUT_KEYWORDS, AI_KEYWORDS
 from utils import clean_text, format_date_with_time, contains_keywords
 
 def fetch_nikkan_article_body(url: str) -> str:
@@ -16,7 +16,7 @@ def fetch_nikkan_article_body(url: str) -> str:
     """
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
-        res = requests.get(url, headers=headers, timeout=10)
+        res = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
         res.raise_for_status()
         soup = BeautifulSoup(res.text, 'html.parser')
         

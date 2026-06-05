@@ -25,8 +25,8 @@ HOCHI_URLS = {
 }
 
 # キーワード
-SCOUT_KEYWORDS = ["draft", "scout", "comment", "ドラフト", "スカウト", "コメント"]
-AI_KEYWORDS = ["ドラフト", "スカウト", "コメント", "視察", "熱視線"]
+SCOUT_KEYWORDS = ["draft", "scout", "ドラフト", "スカウト"]
+AI_KEYWORDS = ["draft", "scout", "ドラフト", "スカウト", "熱視線"]
 
 # Google Sheets設定
 SPREADSHEET_NAME = 'DraftNews'
@@ -39,6 +39,7 @@ GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.1-flash-lite')
 # スクレイピング設定
 MAX_ARTICLES_PER_SOURCE = 20
 SLEEP_SECONDS = 1 
+REQUEST_TIMEOUT = 15
 
 # Yahoo!スポーツナビ設定
 YAHOO_SPONAVI_CONFIG = {

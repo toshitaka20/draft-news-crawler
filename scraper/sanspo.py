@@ -7,7 +7,7 @@ import requests
 import time
 from typing import List, Dict, Any
 from bs4 import BeautifulSoup
-from config import MAX_ARTICLES_PER_SOURCE, SLEEP_SECONDS, AI_KEYWORDS
+from config import MAX_ARTICLES_PER_SOURCE, SLEEP_SECONDS, REQUEST_TIMEOUT, AI_KEYWORDS
 from utils import clean_text, format_date_with_time, contains_keywords
 
 def fetch_sanspo_article_links(list_url: str, max_articles: int = MAX_ARTICLES_PER_SOURCE) -> List[str]:
@@ -15,7 +15,8 @@ def fetch_sanspo_article_links(list_url: str, max_articles: int = MAX_ARTICLES_P
     サンスポの記事一覧ページから記事URLを抽出
     """
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
-    res = requests.get(list_url, headers=headers)
+    res = requests.get(list_url, headers=headers, timeout=REQUEST_TIMEOUT)
+    res.raise_for_status()
     soup = BeautifulSoup(res.text, 'html.parser')
     links: List[str] = []
     count = 0
@@ -49,7 +50,8 @@ def fetch_sanspo_article_body(article_url: str) -> tuple:
     サンスポの記事本文を取得
     """
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
-    res = requests.get(article_url, headers=headers)
+    res = requests.get(article_url, headers=headers, timeout=REQUEST_TIMEOUT)
+    res.raise_for_status()
     soup = BeautifulSoup(res.text, 'html.parser')
     
     print(f"[DEBUG] サンスポ記事取得: {article_url}")

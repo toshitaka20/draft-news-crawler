@@ -655,12 +655,16 @@ def filter_yahoo_against_existing(yahoo_articles: List[Dict[str, Any]], threshol
     print(f"[DEBUG] Yahoo独自記事数: {len(unique_yahoo_articles)}件")
     return unique_yahoo_articles
 
-def smart_deduplicate_articles(articles: List[Dict[str, Any]], include_existing_comparison: bool = True) -> List[Dict[str, Any]]:
+def smart_deduplicate_articles(
+    articles: List[Dict[str, Any]],
+    include_existing_comparison: bool = True,
+    check_existing_yahoo_urls: bool = False
+) -> List[Dict[str, Any]]:
     """
     スマートな重複除去（既存記事との比較オプション付き）
     1. まず記事間の重複除去（URL、ハッシュ、類似度ベース）
-    2. 既存Yahoo記事とのURL重複チェック
-    3. その後、既存記事との比較（オプション）
+    2. 既存Yahoo記事とのURL重複チェック（オプション）
+    3. 既存記事との比較（オプション）
     """
     print(f"[DEBUG] スマート重複除去開始: {len(articles)}件")
     
@@ -669,8 +673,11 @@ def smart_deduplicate_articles(articles: List[Dict[str, Any]], include_existing_
     print(f"[DEBUG] 記事間重複除去後: {len(deduplicated_articles)}件")
     
     # 2. 既存Yahoo記事とのURL重複チェック
-    deduplicated_articles = filter_existing_yahoo_urls(deduplicated_articles)
-    print(f"[DEBUG] 既存Yahoo記事URL重複除去後: {len(deduplicated_articles)}件")
+    if check_existing_yahoo_urls:
+        deduplicated_articles = filter_existing_yahoo_urls(deduplicated_articles)
+        print(f"[DEBUG] 既存Yahoo記事URL重複除去後: {len(deduplicated_articles)}件")
+    else:
+        print("[DEBUG] 既存Yahoo記事URL重複チェックをスキップ")
     
     # 3. 既存記事との内容比較（オプション）
     if include_existing_comparison:

@@ -37,6 +37,7 @@ def main():
             )
             
             # 記事の詳細内容を取得
+            detailed_articles = []
             for article in category_articles:
                 if article.get('url'):
                     title, date, body = scraper.fetch_article_content(article['url'])
@@ -45,9 +46,12 @@ def main():
                         article['body'] = body
                         article['date'] = date or article.get('date', '')
                         article['has_keywords'] = contains_keywords(f"{title} {body}", AI_KEYWORDS)
+                        detailed_articles.append(article)
+                    else:
+                        print(f"[DEBUG] 本文取得失敗のため除外: {article.get('url', '')}")
             
-            all_articles.extend(category_articles)
-            print(f"{category}記事数: {len(category_articles)}")
+            all_articles.extend(detailed_articles)
+            print(f"{category}記事数: {len(detailed_articles)}")
         
         print(f"\n=== 総記事数: {len(all_articles)}件 ===")
         
@@ -64,7 +68,8 @@ def main():
         print("\n2. Yahoo記事間の重複除去中...")
         deduplicated_articles = smart_deduplicate_articles(
             unique_yahoo_articles, 
-            include_existing_comparison=True
+            include_existing_comparison=False,
+            check_existing_yahoo_urls=False
         )
         print(f"重複除去後記事数: {len(deduplicated_articles)}")
         
