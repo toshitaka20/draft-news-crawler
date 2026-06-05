@@ -55,8 +55,8 @@
 pip install -r requirements.txt
 python main_new.py
 ```
-
 ## 出力
 
 - Google Sheets: 記事データとスカウトコメント
 - コンソール: 実行ログと統計情報
+- 
