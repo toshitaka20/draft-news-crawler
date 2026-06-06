@@ -7,9 +7,24 @@ from typing import List, Dict, Any
 from scraper.yahoo_sponavi import YahooSponaviScraper
 from ai.gemini import process_articles_with_ai
 from sheets.google_sheets import update_sheets, get_existing_urls_by_source
-from database.supabase_client import insert_scout_comments_directly
+from database.supabase_client import (
+    get_existing_crawled_urls_by_source,
+    insert_scout_comments_directly,
+    upsert_crawled_articles,
+)
 from utils import filter_yahoo_against_existing, smart_deduplicate_articles, annotate_article_signals
 from config import YAHOO_SPONAVI_URLS, YAHOO_SPONAVI_MAX_ARTICLES
+
+def get_existing_urls_for_source(source: str) -> set:
+    """
+    DBを優先して既存URLを取得する。移行期間中はSheetsをfallbackにする。
+    """
+    db_urls = get_existing_crawled_urls_by_source(source)
+    if db_urls:
+        return db_urls
+
+    print(f"[DEBUG] DB既存URLが空のためSheets fallback: {source}")
+    return get_existing_urls_by_source(source)
 
 def main():
     """
@@ -24,7 +39,7 @@ def main():
         scraper = YahooSponaviScraper()
         
         # 既存URLを取得（重複回避）
-        yahoo_existing_urls = get_existing_urls_by_source('Yahoo!スポーツナビ')
+        yahoo_existing_urls = get_existing_urls_for_source('Yahoo!スポーツナビ')
         print(f"[DEBUG] Yahoo!スポーツナビ既存URL数: {len(yahoo_existing_urls)}")
         
         # 各カテゴリの記事を取得
@@ -96,9 +111,16 @@ def main():
         
         # 5. 全記事をマージ
         all_processed = processed_keyword_articles + no_keyword_articles
-        
-        # 6. スカウトコメントをデータベースに直接INSERT
-        print("\n4. スカウトコメントデータベース挿入中...")
+
+        # 6. 生記事をDBへ保存（URL重複判定の正本）
+        print("\n4. 生記事データベース保存中...")
+        crawled_results = upsert_crawled_articles(all_processed)
+        print(f"  対象件数: {crawled_results['total']}件")
+        print(f"  保存件数: {crawled_results['upserted']}件")
+        print(f"  エラー件数: {crawled_results['errors']}件")
+
+        # 7. スカウトコメントをデータベースに直接INSERT
+        print("\n5. スカウトコメントデータベース挿入中...")
         all_scout_rows = []
         for article in all_processed:
             scout_rows = article.get('scout_rows', [])
@@ -121,8 +143,8 @@ def main():
         else:
             print("スカウトコメントが見つかりませんでした。")
         
-        # 7. Google Sheets更新
-        print("\n5. Google Sheets更新中...")
+        # 8. Google Sheets更新
+        print("\n6. Google Sheets更新中...")
         update_sheets(all_processed)
         
         print(f"\n=== Yahoo!スポーツナビ処理完了 ===")

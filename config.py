@@ -5,6 +5,12 @@
 import os
 from typing import Dict, List
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 # 日刊フィードURL
 NIKKAN_FEEDS = {
     "高校野球": "https://www.nikkansports.com/baseball/highschool/atom.xml",

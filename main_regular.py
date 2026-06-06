@@ -11,9 +11,24 @@ from scraper.sanspo import fetch_all_sanspo_articles
 from scraper.chunichi import fetch_all_chunichi_articles
 from ai.gemini import process_articles_with_ai
 from sheets.google_sheets import update_sheets, get_existing_urls_by_source
-from database.supabase_client import insert_scout_comments_directly
+from database.supabase_client import (
+    get_existing_crawled_urls_by_source,
+    insert_scout_comments_directly,
+    upsert_crawled_articles,
+)
 from utils import smart_deduplicate_articles
 from config import HOCHI_URLS
+
+def get_existing_urls_for_source(source: str) -> set:
+    """
+    DBを優先して既存URLを取得する。移行期間中はSheetsをfallbackにする。
+    """
+    db_urls = get_existing_crawled_urls_by_source(source)
+    if db_urls:
+        return db_urls
+
+    print(f"[DEBUG] DB既存URLが空のためSheets fallback: {source}")
+    return get_existing_urls_by_source(source)
 
 def main():
     """
@@ -26,14 +41,14 @@ def main():
     try:
         # 1. スポニチ記事取得
         print("\n1. スポニチ記事取得中...")
-        sponichi_existing_urls = get_existing_urls_by_source('スポニチ')
+        sponichi_existing_urls = get_existing_urls_for_source('スポニチ')
         sponichi_articles = fetch_all_sponichi_articles(exclude_urls=sponichi_existing_urls)
         all_articles.extend(sponichi_articles)
         print(f"スポニチ記事数: {len(sponichi_articles)}")
         
         # 2. スポーツ報知記事取得
         print("\n2. スポーツ報知記事取得中...")
-        hochi_existing_urls = get_existing_urls_by_source('スポーツ報知')
+        hochi_existing_urls = get_existing_urls_for_source('スポーツ報知')
         hochi_articles = []
         for category, url in HOCHI_URLS.items():
             print(f"  {category}記事取得中...")
@@ -44,21 +59,21 @@ def main():
         
         # 3. 日刊スポーツ記事取得
         print("\n3. 日刊スポーツ記事取得中...")
-        nikkan_existing_urls = get_existing_urls_by_source('日刊スポーツ')
+        nikkan_existing_urls = get_existing_urls_for_source('日刊スポーツ')
         nikkan_articles = fetch_all_nikkan_sports_articles(exclude_urls=nikkan_existing_urls)
         all_articles.extend(nikkan_articles)
         print(f"日刊スポーツ記事数: {len(nikkan_articles)}")
         
         # 4. サンスポ記事取得
         print("\n4. サンスポ記事取得中...")
-        sanspo_existing_urls = get_existing_urls_by_source('サンスポ')
+        sanspo_existing_urls = get_existing_urls_for_source('サンスポ')
         sanspo_articles = fetch_all_sanspo_articles(exclude_urls=sanspo_existing_urls)
         all_articles.extend(sanspo_articles)
         print(f"サンスポ記事数: {len(sanspo_articles)}")
         
         # 5. 中日スポーツ記事取得
         print("\n5. 中日スポーツ記事取得中...")
-        chunichi_existing_urls = get_existing_urls_by_source('中日スポーツ')
+        chunichi_existing_urls = get_existing_urls_for_source('中日スポーツ')
         chunichi_articles = fetch_all_chunichi_articles(exclude_urls=chunichi_existing_urls)
         all_articles.extend(chunichi_articles)
         print(f"中日スポーツ記事数: {len(chunichi_articles)}")
@@ -97,9 +112,16 @@ def main():
         
         # 9. 全記事をマージ
         all_processed = processed_keyword_articles + no_keyword_articles
-        
-        # 10. スカウトコメントをデータベースに直接INSERT
-        print("\n8. スカウトコメントデータベース挿入中...")
+
+        # 10. 生記事をDBへ保存（URL重複判定の正本）
+        print("\n8. 生記事データベース保存中...")
+        crawled_results = upsert_crawled_articles(all_processed)
+        print(f"  対象件数: {crawled_results['total']}件")
+        print(f"  保存件数: {crawled_results['upserted']}件")
+        print(f"  エラー件数: {crawled_results['errors']}件")
+
+        # 11. スカウトコメントをデータベースに直接INSERT
+        print("\n9. スカウトコメントデータベース挿入中...")
         all_scout_rows = []
         for article in all_processed:
             scout_rows = article.get('scout_rows', [])
@@ -122,8 +144,8 @@ def main():
         else:
             print("スカウトコメントが見つかりませんでした。")
         
-        # 11. Google Sheets更新
-        print("\n9. Google Sheets更新中...")
+        # 12. Google Sheets更新
+        print("\n10. Google Sheets更新中...")
         update_sheets(all_processed)
         
         print(f"\n=== 既存5社処理完了 ===")

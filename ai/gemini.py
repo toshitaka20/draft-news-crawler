@@ -101,6 +101,7 @@ def extract_scout_comments_with_gemini(article_text: str, title: str, published:
 - 楽天 → eagles
 - メジャーリーグ球団（匿名） → MLB
 - メジャーリーグ球団（名前あり） → その球団名（例：マリナーズ）
+- NPB球団（匿名・球団名不明） → other
 - その他の球団・組織 → other
 
 【出力カラム】
@@ -176,7 +177,9 @@ def process_articles_with_ai(articles: List[Dict[str, Any]]) -> List[Dict[str, A
                             if len(row) == 7:
                                 # 記事公開日のフォーマットを統一（timestamp with time zone形式）
                                 from utils import format_timestamp
-                                processed_row = list(row)
+                                processed_row = [cell.strip() for cell in row]
+                                if processed_row[3].lower() in ('unknown', '不明', ''):
+                                    processed_row[3] = 'other'
                                 processed_row[5] = format_timestamp(row[5])  # 記事公開日（6列目）をフォーマット
                                 scout_rows.append(processed_row)
                     except Exception as e:

@@ -18,10 +18,11 @@ def contains_keywords(text: str, keywords: List[str]) -> bool:
 
 SCOUT_COMMENT_ROLE_PATTERN = re.compile(
     r'(スカウト[\w一-龥ァ-ンー・／兼]*|アマスカウト[\w一-龥ァ-ンー・／兼]*|'
-    r'編成[\w一-龥ァ-ンー・／兼]*|球団本部[\w一-龥ァ-ンー・／兼]*|'
+    r'編成(?:[\w一-龥ァ-ンー・／兼]{0,16})?(?:本部長|副本部長|部長|副部長|担当|ディレクター|部|グループ)|'
+    r'球団本部[\w一-龥ァ-ンー・／兼]*|'
     r'統括[\w一-龥ァ-ンー・／兼]*|育成Gマネージャー|スカウトGマネージャー|'
     r'スカウトGディレクター|アマスカウトGディレクター|'
-    r'GM|ＧＭ|CBO|ＣＢＯ|ゼネラルマネジャー|球団関係者|'
+    r'(?:GM|ＧＭ)(?!業)|CBO|ＣＢＯ|ゼネラルマネジャー|球団関係者|'
     r'MLBスカウト|メジャースカウト)'
 )
 SCOUT_AFFILIATED_ROLE_PATTERN = re.compile(
@@ -32,10 +33,19 @@ SCOUT_AFFILIATED_ROLE_PATTERN = re.compile(
 SCOUT_COMMENT_VERB_PATTERN = re.compile(
     r'(評価|絶賛|太鼓判|コメント|話した|語った|評した|称賛|注目|マーク)'
 )
+NEGATIVE_SIGNAL_PATTERN = re.compile(
+    r'(コメントはなかった|コメントはない|コメントなし|発言はなかった|発言はない|'
+    r'視察の記述はない|視察の記述はなかった|視察はなかった|視察はない|'
+    r'スカウトの具体的なコメントはなかった|具体的なコメントはなかった|'
+    r'7回制|７回制|7イニング制|７イニング制|意見交換会|検討会議|'
+    r'野球事業|取締役|新球団名|独立リーグ)'
+)
 ATTENTION_PATTERN = re.compile(
     r'(視察|集結|熱視線|スカウト陣|スカウトが訪れ|スカウト.*詰めかけ|'
-    r'姿を見せ|姿も見せ|姿を現し|姿も現し|'
-    r'\d+球団|[０-９]+球団|全球団|12球団|ＮＰＢ|NPB|MLB|メジャー)'
+    r'スカウト.*見守|スカウト.*持参|バックネット裏.*スカウト|'
+    r'\d+球団|[０-９]+球団|[一二三四五六七八九十十一十二]+球団|'
+    r'全球団|12球団|十二球団|日米\d+球団|日米[０-９]+球団|'
+    r'MLBスカウト|メジャースカウト|メジャー.*スカウト|米球団)'
 )
 JAPANESE_TEAM_NAMES = [
     '巨人', '阪神', '中日', '広島', 'DeNA', '横浜DeNA', 'ヤクルト',
@@ -96,11 +106,31 @@ def _has_known_scout_staff(text: str) -> bool:
         if name in normalized:
             return True
 
-    for surname in KNOWN_SCOUT_STAFF_SURNAMES:
-        if surname and surname in normalized:
-            return True
-
     return False
+
+
+def _is_negative_signal(text: str) -> bool:
+    return bool(NEGATIVE_SIGNAL_PATTERN.search(text))
+
+
+def _has_former_role_prefix(text: str, role_start: int) -> bool:
+    prefix = text[max(0, role_start - 10):role_start]
+    return bool(re.search(r'(元|前)[^。\n]{0,9}$', prefix))
+
+
+def _is_attention_signal_sentence(sentence: str) -> bool:
+    if not ATTENTION_PATTERN.search(sentence):
+        return False
+    if re.search(r'(セカンドキャリア|戦力外|引退後|進路調査|ジュニアトーナメント|特別企画|メンバー表|本塁打数)', sentence):
+        return False
+    if '集結' in sentence and not re.search(r'(スカウト|球団|NPB|ＮＰＢ|日米|米球団)', sentence):
+        return False
+    if '全球団' in sentence and not re.search(r'(スカウト|視察|熱視線|ドラフト|候補|プロ注目|オファー|獲得調査|リストアップ|訪れ|見守|持参|バックネット|態勢)', sentence):
+        return False
+    if re.search(r'([0-9０-９]+|[一二三四五六七八九十十一十二]+|全球団|12|１２|十二)球団', sentence):
+        if not re.search(r'(スカウト|視察|熱視線|ドラフト|候補|プロ注目|オファー|獲得調査|リストアップ|訪れ|見守|持参|バックネット|態勢)', sentence):
+            return False
+    return True
 
 
 def has_scout_comment_candidate(text: str) -> bool:
@@ -110,10 +140,18 @@ def has_scout_comment_candidate(text: str) -> bool:
     """
     if not text:
         return False
+    if re.search(r'(7回制|７回制|7イニング制|７イニング制|意見交換会|検討会議)', text):
+        return False
 
     for role_match in SCOUT_COMMENT_ROLE_PATTERN.finditer(text):
+        if _has_former_role_prefix(text, role_match.start()):
+            continue
         window = text[role_match.start():role_match.start() + 400]
-        if SCOUT_COMMENT_VERB_PATTERN.search(window):
+        if (
+            not _is_negative_signal(window)
+            and SCOUT_COMMENT_VERB_PATTERN.search(window)
+            and ('スカウト' in role_match.group(0) or '「' in window[:220])
+        ):
             return True
 
     normalized_text = _normalize_person_text(text)
@@ -122,6 +160,8 @@ def has_scout_comment_candidate(text: str) -> bool:
         if pos >= 0:
             window = normalized_text[pos:pos + 400]
             if (
+                not _is_negative_signal(window)
+                and
                 (SCOUT_COMMENT_ROLE_PATTERN.search(window) or SCOUT_AFFILIATED_ROLE_PATTERN.search(window))
                 and SCOUT_COMMENT_VERB_PATTERN.search(window)
             ):
@@ -131,11 +171,17 @@ def has_scout_comment_candidate(text: str) -> bool:
         if _has_known_scout_staff(sentence) and SCOUT_AFFILIATED_ROLE_PATTERN.search(sentence):
             window_start = text.find(sentence)
             window = text[window_start:window_start + 400] if window_start >= 0 else sentence
-            if SCOUT_COMMENT_VERB_PATTERN.search(window):
+            if not _is_negative_signal(window) and SCOUT_COMMENT_VERB_PATTERN.search(window):
                 return True
 
     for sentence in re.split(r'[。\n]', text):
-        if SCOUT_COMMENT_ROLE_PATTERN.search(sentence) and SCOUT_COMMENT_VERB_PATTERN.search(sentence):
+        role_match = SCOUT_COMMENT_ROLE_PATTERN.search(sentence)
+        if (
+            not _is_negative_signal(sentence)
+            and role_match
+            and not _has_former_role_prefix(sentence, role_match.start())
+            and SCOUT_COMMENT_VERB_PATTERN.search(sentence)
+        ):
             return True
     return False
 
@@ -144,7 +190,13 @@ def has_attention_candidate(text: str) -> bool:
     """
     視察球団数・視察人数・球団名など、注目度情報がありそうな記事か判定する。
     """
-    return bool(text and ATTENTION_PATTERN.search(text))
+    if not text:
+        return False
+
+    for sentence in re.split(r'[。\n]', text):
+        if _is_attention_signal_sentence(sentence) and not _is_negative_signal(sentence):
+            return True
+    return False
 
 
 def calculate_attention_score(team_count: int, person_count: int, teams: List[str], has_mlb: bool, has_comment_candidate: bool) -> int:
@@ -172,6 +224,19 @@ def calculate_attention_score(team_count: int, person_count: int, teams: List[st
     return min(score, 7)
 
 
+def _extract_scout_person_count(sentence: str) -> int:
+    patterns = [
+        r'([0-9０-９]+|[一二三四五六七八九十十一十二]+)人(?:の)?スカウト',
+        r'スカウト(?:陣)?([0-9０-９]+|[一二三四五六七八九十十一十二]+)人',
+        r'([0-9０-９]+|[一二三四五六七八九十十一十二]+)人(?:態勢|で視察|が視察|が集結|が見守)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, sentence)
+        if match:
+            return _normalize_number(match.group(1)) or 0
+    return 0
+
+
 def extract_attention_rows(article: Dict[str, Any]) -> List[List[Any]]:
     """
     記事から視察球団数・人数・球団名・注目度をルールベースで抽出する。
@@ -186,7 +251,9 @@ def extract_attention_rows(article: Dict[str, Any]) -> List[List[Any]]:
     for text in texts:
         for sentence in re.split(r'[。\n]', text):
             sentence = clean_text(sentence)
-            if not sentence or not has_attention_candidate(sentence):
+            if not sentence or not _is_attention_signal_sentence(sentence):
+                continue
+            if _is_negative_signal(sentence):
                 continue
 
             team_count = 0
@@ -199,23 +266,24 @@ def extract_attention_rows(article: Dict[str, Any]) -> List[List[Any]]:
                 if team_count_match:
                     team_count = _normalize_number(team_count_match.group(1)) or 0
 
-            person_match = re.search(r'([0-9０-９]+|[一二三四五六七八九十十一十二]+)人', sentence)
-            if person_match:
-                person_count = _normalize_number(person_match.group(1)) or 0
+            person_count = _extract_scout_person_count(sentence)
 
             teams = []
             for team in JAPANESE_TEAM_NAMES:
                 if team in sentence and team not in teams:
                     teams.append(team)
 
-            has_mlb = bool(re.search(r'(MLB|ＭＬＢ|メジャー|大リーグ)', sentence))
+            has_mlb = bool(re.search(r'(MLB|ＭＬＢ|メジャー|大リーグ|日米)', sentence))
             has_npb = bool(re.search(r'(NPB|ＮＰＢ|プロ野球|球団|スカウト|視察)', sentence)) or bool(teams)
             has_comment = has_scout_comment_candidate(sentence)
+            has_scout_presence = bool(re.search(r'スカウト', sentence))
 
-            if not (team_count or person_count or teams or has_mlb or has_comment):
+            if not (team_count or person_count or teams or has_mlb or has_comment or has_scout_presence):
                 continue
 
             score = calculate_attention_score(team_count, person_count, teams, has_mlb, has_comment)
+            if score == 0 and has_scout_presence:
+                score = 1
             rows.append([
                 article.get('date', ''),
                 article.get('source', ''),

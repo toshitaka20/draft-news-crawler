@@ -1,6 +1,7 @@
 import os
 import re
-from typing import List, Dict, Optional, Tuple
+import hashlib
+from typing import List, Dict, Optional, Tuple, Any, Set
 from datetime import datetime, timezone, timedelta
 
 # 日本時間（JST）のタイムゾーン
@@ -9,6 +10,29 @@ JST = timezone(timedelta(hours=9))
 def now_jst() -> datetime:
     """日本時間での現在時刻を取得"""
     return datetime.now(JST)
+
+def _init_supabase_client(dummy_mode: bool = False) -> Tuple[bool, Optional["Client"]]:
+    """Supabaseクライアントを初期化し、(dummy_mode, client) を返す。"""
+    is_dummy = dummy_mode or not SUPABASE_AVAILABLE
+
+    if is_dummy:
+        return True, None
+
+    supabase_url = os.getenv('SUPABASE_URL')
+    supabase_key = os.getenv('SUPABASE_SERVICE_ROLE_KEY') or os.getenv('SUPABASE_KEY')
+
+    if not supabase_url or not supabase_key:
+        print("⚠️  Supabase環境変数が設定されていません。ダミーモードで動作します。")
+        print(f"    SUPABASE_URL: {'設定済み' if supabase_url else '未設定'}")
+        print(f"    SUPABASE_KEY: {'設定済み' if supabase_key else '未設定'}")
+        return True, None
+
+    try:
+        return False, create_client(supabase_url, supabase_key)
+    except Exception as e:
+        print(f"⚠️  Supabase接続エラー: {e}")
+        print("ダミーモードで動作します。")
+        return True, None
 
 # python-dotenvを使用して.envファイルを読み込む
 try:
@@ -25,6 +49,118 @@ try:
 except ImportError:
     SUPABASE_AVAILABLE = False
     print("⚠️  Supabaseライブラリが見つかりません。ダミーモードで動作します。")
+
+class SupabaseCrawledArticleStore:
+    """crawled_articles を使った生記事保存・URL重複判定。"""
+
+    def __init__(self, dummy_mode: bool = False):
+        self.dummy_mode, self.supabase = _init_supabase_client(dummy_mode=dummy_mode)
+        if not self.dummy_mode:
+            print("✅ Supabaseクライアントを初期化しました（crawled_articles）")
+
+    @staticmethod
+    def calculate_content_hash(title: str, body: str) -> str:
+        normalized = re.sub(r'\s+', ' ', f"{title or ''}\n{body or ''}".strip())
+        return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+
+    @staticmethod
+    def _format_published_at(date_value: str) -> Optional[str]:
+        if not date_value:
+            return None
+
+        try:
+            from utils import format_timestamp
+            formatted = format_timestamp(date_value)
+            return formatted or None
+        except Exception:
+            return date_value
+
+    @staticmethod
+    def _to_record(article: Dict[str, Any]) -> Dict[str, Any]:
+        title = article.get('title', '') or ''
+        body = article.get('body', '') or ''
+        return {
+            'source': article.get('source', '') or '不明',
+            'category': article.get('category', ''),
+            'url': article.get('url', ''),
+            'title': title,
+            'body': body,
+            'published_at': SupabaseCrawledArticleStore._format_published_at(article.get('date', '') or ''),
+            'has_scout_comment_candidate': bool(article.get('has_scout_comment_candidate', False)),
+            'has_attention_candidate': bool(article.get('has_attention_candidate', False)),
+            'has_player_candidate': bool(article.get('has_player_candidate', False)),
+            'content_hash': SupabaseCrawledArticleStore.calculate_content_hash(title, body),
+            'raw': {
+                'date': article.get('date', ''),
+                'scout_comments': article.get('scout_comments', ''),
+                'attention_rows': article.get('attention_rows', []),
+            },
+        }
+
+    def get_existing_urls_by_source(self, source: str) -> Set[str]:
+        if self.dummy_mode or self.supabase is None:
+            print(f"[DB] crawled_articles URL取得スキップ（ダミーモード）: {source}")
+            return set()
+
+        try:
+            response = (
+                self.supabase
+                .table('crawled_articles')
+                .select('url')
+                .eq('source', source)
+                .execute()
+            )
+            urls = {row['url'] for row in (response.data or []) if row.get('url')}
+            print(f"[DB] crawled_articles 既存URL数 ({source}): {len(urls)}")
+            return urls
+        except Exception as e:
+            print(f"[DB] crawled_articles 既存URL取得エラー ({source}): {e}")
+            return set()
+
+    def get_existing_urls(self) -> Set[str]:
+        if self.dummy_mode or self.supabase is None:
+            print("[DB] crawled_articles URL取得スキップ（ダミーモード）")
+            return set()
+
+        try:
+            response = self.supabase.table('crawled_articles').select('url').execute()
+            urls = {row['url'] for row in (response.data or []) if row.get('url')}
+            print(f"[DB] crawled_articles 既存URL数: {len(urls)}")
+            return urls
+        except Exception as e:
+            print(f"[DB] crawled_articles 既存URL取得エラー: {e}")
+            return set()
+
+    def upsert_articles(self, articles: List[Dict[str, Any]]) -> Dict[str, int]:
+        if not articles:
+            return {'total': 0, 'upserted': 0, 'errors': 0}
+
+        if self.dummy_mode or self.supabase is None:
+            print(f"[DB] crawled_articles 保存スキップ（ダミーモード）: {len(articles)}件")
+            return {'total': len(articles), 'upserted': 0, 'errors': 0}
+
+        records = []
+        for article in articles:
+            record = self._to_record(article)
+            if record['url'] and record['title']:
+                records.append(record)
+
+        if not records:
+            return {'total': len(articles), 'upserted': 0, 'errors': len(articles)}
+
+        try:
+            response = (
+                self.supabase
+                .table('crawled_articles')
+                .upsert(records, on_conflict='url')
+                .execute()
+            )
+            upserted = len(response.data or records)
+            print(f"[DB] crawled_articles 保存完了: {upserted}件")
+            return {'total': len(articles), 'upserted': upserted, 'errors': 0}
+        except Exception as e:
+            print(f"[DB] crawled_articles 保存エラー: {e}")
+            return {'total': len(articles), 'upserted': 0, 'errors': len(articles)}
 
 class SupabasePlayerLookup:
     """Supabaseを使用した選手ID取得機能"""
@@ -456,4 +592,19 @@ def generate_scout_comment_sql_with_resolved_ids(scout_rows: List[List[str]], du
 def insert_scout_comments_directly(scout_rows: List[List[str]], dummy_mode: bool = False) -> Dict[str, int]:
     """スカウトコメントをデータベースに直接INSERT"""
     inserter = SupabaseScoutCommentInserter(dummy_mode=dummy_mode)
-    return inserter.insert_multiple_scout_comments(scout_rows) 
+    return inserter.insert_multiple_scout_comments(scout_rows)
+
+def get_existing_crawled_urls_by_source(source: str, dummy_mode: bool = False) -> Set[str]:
+    """crawled_articles から指定ソースの既存URLを取得"""
+    store = SupabaseCrawledArticleStore(dummy_mode=dummy_mode)
+    return store.get_existing_urls_by_source(source)
+
+def get_existing_crawled_urls(dummy_mode: bool = False) -> Set[str]:
+    """crawled_articles から全既存URLを取得"""
+    store = SupabaseCrawledArticleStore(dummy_mode=dummy_mode)
+    return store.get_existing_urls()
+
+def upsert_crawled_articles(articles: List[Dict[str, Any]], dummy_mode: bool = False) -> Dict[str, int]:
+    """crawled_articles に記事をupsert"""
+    store = SupabaseCrawledArticleStore(dummy_mode=dummy_mode)
+    return store.upsert_articles(articles)
