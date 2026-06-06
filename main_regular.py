@@ -128,23 +128,24 @@ def main():
         print(f"  保存件数: {crawled_results['upserted']}件")
         print(f"  エラー件数: {crawled_results['errors']}件")
 
-        # 12. 注目度シグナルをDBへ保存
-        print("\n10. 注目度シグナルデータベース保存中...")
+        # 12. 未登録選手候補・既存選手記事根拠をDBへ保存
+        print("\n10. 選手候補データベース保存中...")
+        player_candidate_results = insert_player_candidates(all_processed)
+        print(f"  対象件数: {player_candidate_results['total']}件")
+        print(f"  候補保存件数: {player_candidate_results['inserted']}件")
+        print(f"  記事根拠保存件数: {player_candidate_results.get('sources_inserted', 0)}件")
+        print(f"  登録済み選手根拠保存件数: {player_candidate_results.get('player_sources_inserted', 0)}件")
+        print(f"  登録済み選手検出件数: {player_candidate_results.get('linked_existing_players', 0)}件")
+        print(f"  重複除外: {player_candidate_results['duplicates']}件")
+        print(f"  エラー件数: {player_candidate_results['errors']}件")
+
+        # 13. 注目度シグナルをDBへ保存
+        print("\n11. 注目度シグナルデータベース保存中...")
         attention_results = insert_attention_signals(all_processed)
         print(f"  対象件数: {attention_results['total']}件")
         print(f"  保存件数: {attention_results['inserted']}件")
         print(f"  重複除外: {attention_results['duplicates']}件")
         print(f"  エラー件数: {attention_results['errors']}件")
-
-        # 13. 未登録選手候補をDBへ保存
-        print("\n11. 選手候補データベース保存中...")
-        player_candidate_results = insert_player_candidates(all_processed)
-        print(f"  対象件数: {player_candidate_results['total']}件")
-        print(f"  候補保存件数: {player_candidate_results['inserted']}件")
-        print(f"  記事根拠保存件数: {player_candidate_results.get('sources_inserted', 0)}件")
-        print(f"  登録済み選手スキップ: {player_candidate_results['skipped_existing_players']}件")
-        print(f"  重複除外: {player_candidate_results['duplicates']}件")
-        print(f"  エラー件数: {player_candidate_results['errors']}件")
 
         # 14. スカウトコメントをデータベースに直接INSERT
         print("\n12. スカウトコメントデータベース挿入中...")

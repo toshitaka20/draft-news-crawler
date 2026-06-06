@@ -242,7 +242,7 @@ create table public.attention_signals (
 実装メモ:
 
 - 最初は記事単位で保存する。
-- 選手名が明確に抽出できるようになったら、`player_id` または `player_candidate_id` を埋める。
+- 保存済みの `player_article_sources` / `player_candidate_sources` と同じ `source_url` があれば、`player_id` または `player_candidate_id` を自動で埋める。
 - `player_candidate_id` が埋まると、未承認候補のレビュー画面でも注目度シグナルをタイムライン表示できる。
 
 ### 5. `draft_watch_article_candidates`
@@ -394,6 +394,8 @@ crawled_articles
 - `scout_comments` はスカウトコメントの正本として既に存在する。
 - `attention_signals` は注目度シグナルの正本として持つ。
 - `player_candidate_sources` は記事由来の選手候補根拠の正本として持つ。
+- `player_article_sources` は既存 `players` に紐付いた外部記事根拠の正本として持つ。
+- Draft-Watch内の記事は既存の `articles` + `article_players` を正本として持つ。
 - タイムライン実体テーブルへコピーすると、更新・削除・修正時に二重管理になる。
 
 推奨view:
@@ -417,6 +419,25 @@ select
 from public.player_candidate_sources pcs
 join public.player_candidates pc on pc.id = pcs.player_candidate_id
 left join public.crawled_articles ca on ca.id = pcs.crawled_article_id
+
+union all
+
+select
+  pas.player_id,
+  null::uuid as player_candidate_id,
+  pas.crawled_article_id,
+  pas.source_url,
+  coalesce(pas.source_title, ca.title) as title,
+  coalesce(pas.published_at, ca.published_at) as published_at,
+  coalesce(pas.source, ca.source) as source,
+  coalesce(pas.category, ca.category) as category,
+  'player_article'::text as item_type,
+  pas.evidence as body,
+  pas.confidence as confidence,
+  null::integer as score,
+  pas.created_at
+from public.player_article_sources pas
+left join public.crawled_articles ca on ca.id = pas.crawled_article_id
 
 union all
 
@@ -456,7 +477,27 @@ select
   ats.created_at
 from public.attention_signals ats
 left join public.crawled_articles ca on ca.id = ats.crawled_article_id
-where ats.player_id is not null or ats.player_candidate_id is not null;
+where ats.player_id is not null or ats.player_candidate_id is not null
+
+union all
+
+select
+  ap.player_id,
+  null::uuid as player_candidate_id,
+  null::uuid as crawled_article_id,
+  null::text as source_url,
+  a.title,
+  a.published_at,
+  'Draft-Watch'::text as source,
+  a.category,
+  'draft_watch_article'::text as item_type,
+  coalesce(a.excerpt, a.meta_description) as body,
+  null::numeric as confidence,
+  null::integer as score,
+  ap.created_at
+from public.article_players ap
+join public.articles a on a.id = ap.article_id
+where ap.player_id is not null;
 ```
 
 正式選手ページでは `player_id` で取得する。
@@ -480,12 +521,50 @@ order by published_at desc nulls last, created_at desc;
 タイムラインに入れる情報:
 
 - `candidate`: AIが記事から抽出した選手候補根拠
+- `player_article`: 既存 `players` に紐付いた外部記事根拠
 - `scout_comment`: スカウトコメント
 - `attention`: NPB/MLB視察、視察球団数、注目度スコア
-- `draft_watch_article`: Draft-Watch公開記事。これは `articles` + `article_players` を追加でUNIONすることで対応する。
+- `draft_watch_article`: Draft-Watch公開記事。`articles` + `article_players` 由来。
 
 `scout_comments` はタイムラインテーブルへ移さない。
 `scout_comments` はスカウトコメントの正本として維持し、タイムラインでは view で読み出す。
+
+### 既存選手の記事根拠
+
+AI抽出した選手が既に `players` に存在する場合、`player_candidates` には保存しない。
+代わりに `player_article_sources` に外部記事根拠を保存する。
+
+```text
+players
+  ↓
+player_article_sources
+  ↓
+crawled_articles
+```
+
+これにより、既存選手についても外部記事タイムラインが蓄積される。
+
+注目度シグナル保存時は、先に `player_article_sources` / `player_candidate_sources` を保存しておく。
+その後 `attention_signals` 保存時に同じ `source_url` を探し、`player_id` または `player_candidate_id` を自動補完する。
+
+推奨カラム:
+
+```sql
+create table public.player_article_sources (
+  id uuid primary key default gen_random_uuid(),
+  player_id uuid not null references public.players(id) on delete cascade,
+  crawled_article_id uuid null references public.crawled_articles(id),
+  source_url text not null,
+  source_title text null,
+  published_at timestamp with time zone null,
+  source text null,
+  category text null,
+  evidence text null,
+  confidence numeric null,
+  extracted_raw jsonb null,
+  created_at timestamp with time zone not null default now()
+);
+```
 
 ## Draft-Watch記事化の方針
 
@@ -579,6 +658,7 @@ Sheetsは正本ではなく、レビュー用ビューにする。
 ### Phase 3: 注目度シグナルをDBへ保存する
 
 - 現在Sheetsに出している `attention_rows` を `attention_signals` に保存する。
+- 同じ `source_url` の選手根拠があれば、`player_id` / `player_candidate_id` を補完する。
 - Draft-Watch記事化判定はこのテーブルを使う。
 
 ### Phase 4: Draft-Watch記事候補を作る

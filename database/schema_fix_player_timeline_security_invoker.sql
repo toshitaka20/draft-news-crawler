@@ -1,6 +1,5 @@
--- Timeline view for player pages.
--- This keeps raw crawled news, scout comments, and attention signals queryable
--- in a single chronological stream.
+-- Supabase linter: avoid SECURITY DEFINER behavior on the timeline view.
+-- SECURITY INVOKER makes the view use the querying user's permissions/RLS.
 
 create or replace view public.player_timeline_items
 with (security_invoker = true)

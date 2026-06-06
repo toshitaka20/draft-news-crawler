@@ -462,13 +462,46 @@ class SupabasePlayerCandidateStore:
             print(f"[DB] player_candidate_sources 既存取得エラー: {e}")
             return set()
 
+    def _get_existing_player_source_keys(self, source_urls: List[str]) -> Set[Tuple[str, str, str]]:
+        if self.dummy_mode or self.supabase is None or not source_urls:
+            return set()
+
+        try:
+            response = (
+                self.supabase
+                .table('player_article_sources')
+                .select('player_id,source_url,evidence')
+                .in_('source_url', sorted(set(source_urls)))
+                .execute()
+            )
+            return {
+                (
+                    row.get('player_id') or '',
+                    row.get('source_url') or '',
+                    row.get('evidence') or '',
+                )
+                for row in (response.data or [])
+            }
+        except Exception as e:
+            print(f"[DB] player_article_sources 既存取得エラー: {e}")
+            return set()
+
     def insert_unregistered_candidates(self, articles: List[Dict[str, Any]]) -> Dict[str, int]:
         rows = []
         for article in articles:
             rows.extend(article.get('player_candidate_rows', []))
 
         if not rows:
-            return {'total': 0, 'inserted': 0, 'skipped_existing_players': 0, 'duplicates': 0, 'errors': 0}
+            return {
+                'total': 0,
+                'inserted': 0,
+                'sources_inserted': 0,
+                'player_sources_inserted': 0,
+                'linked_existing_players': 0,
+                'skipped_existing_players': 0,
+                'duplicates': 0,
+                'errors': 0,
+            }
 
         if self.dummy_mode or self.supabase is None:
             print(f"[DB] player_candidates 保存スキップ（ダミーモード）: {len(rows)}件")
@@ -476,6 +509,8 @@ class SupabasePlayerCandidateStore:
                 'total': len(rows),
                 'inserted': 0,
                 'sources_inserted': 0,
+                'player_sources_inserted': 0,
+                'linked_existing_players': 0,
                 'skipped_existing_players': 0,
                 'duplicates': 0,
                 'errors': 0,
@@ -486,7 +521,8 @@ class SupabasePlayerCandidateStore:
         player_id_map = self.player_lookup.lookup_multiple_players([row.get('name', '') for row in rows])
 
         candidate_inputs = []
-        skipped_existing_players = 0
+        player_source_inputs = []
+        linked_existing_players = 0
         duplicates = 0
 
         for row in rows:
@@ -497,7 +533,8 @@ class SupabasePlayerCandidateStore:
 
             player_id = player_id_map.get(name)
             if player_id is not None:
-                skipped_existing_players += 1
+                linked_existing_players += 1
+                player_source_inputs.append((str(player_id), row))
                 continue
 
             team_name = self._clean_text(row.get('team_name'))
@@ -563,7 +600,9 @@ class SupabasePlayerCandidateStore:
                 'total': len(rows),
                 'inserted': 0,
                 'sources_inserted': 0,
-                'skipped_existing_players': skipped_existing_players,
+                'player_sources_inserted': 0,
+                'linked_existing_players': linked_existing_players,
+                'skipped_existing_players': linked_existing_players,
                 'duplicates': duplicates,
                 'errors': len(candidate_records),
             }
@@ -609,17 +648,69 @@ class SupabasePlayerCandidateStore:
                 'total': len(rows),
                 'inserted': inserted,
                 'sources_inserted': 0,
-                'skipped_existing_players': skipped_existing_players,
+                'player_sources_inserted': 0,
+                'linked_existing_players': linked_existing_players,
+                'skipped_existing_players': linked_existing_players,
                 'duplicates': duplicates,
                 'errors': len(source_records),
             }
 
         self._refresh_candidate_source_summaries(sorted({record['player_candidate_id'] for record in source_records}))
+
+        player_source_records = []
+        seen_player_source_keys: Set[Tuple[str, str, str]] = set()
+        existing_player_source_keys = self._get_existing_player_source_keys(source_urls)
+        for player_id, row in player_source_inputs:
+            source_url = self._clean_text(row.get('source_url'))
+            if not player_id or not source_url:
+                continue
+
+            evidence = self._clean_text(row.get('evidence'))
+            source_key = (player_id, source_url, evidence or '')
+            if source_key in seen_player_source_keys or source_key in existing_player_source_keys:
+                duplicates += 1
+                continue
+            seen_player_source_keys.add(source_key)
+
+            player_source_records.append({
+                'player_id': player_id,
+                'crawled_article_id': crawled_id_map.get(source_url),
+                'source_url': source_url,
+                'source_title': self._clean_text(row.get('source_title')),
+                'published_at': SupabaseCrawledArticleStore._format_published_at(row.get('published_at') or ''),
+                'source': self._clean_text(row.get('source')),
+                'category': self._clean_text(row.get('article_category') or row.get('category')),
+                'evidence': evidence,
+                'confidence': self._to_confidence(row.get('confidence')),
+                'extracted_raw': row.get('extracted_raw') or row,
+            })
+
+        player_sources_inserted = 0
+        try:
+            if player_source_records:
+                response = self.supabase.table('player_article_sources').insert(player_source_records).execute()
+                player_sources_inserted = len(response.data or player_source_records)
+                print(f"[DB] player_article_sources 保存完了: {player_sources_inserted}件")
+        except Exception as e:
+            print(f"[DB] player_article_sources 保存エラー: {e}")
+            return {
+                'total': len(rows),
+                'inserted': inserted,
+                'sources_inserted': sources_inserted,
+                'player_sources_inserted': 0,
+                'linked_existing_players': linked_existing_players,
+                'skipped_existing_players': linked_existing_players,
+                'duplicates': duplicates,
+                'errors': len(player_source_records),
+            }
+
         return {
             'total': len(rows),
             'inserted': inserted,
             'sources_inserted': sources_inserted,
-            'skipped_existing_players': skipped_existing_players,
+            'player_sources_inserted': player_sources_inserted,
+            'linked_existing_players': linked_existing_players,
+            'skipped_existing_players': linked_existing_players,
             'duplicates': duplicates,
             'errors': 0,
         }
@@ -695,6 +786,73 @@ class SupabaseAttentionSignalStore:
             print(f"[DB] attention_signals 既存取得エラー: {e}")
             return set()
 
+    def _get_player_links_by_source_urls(self, source_urls: List[str]) -> Dict[str, Dict[str, Optional[str]]]:
+        if self.dummy_mode or self.supabase is None or not source_urls:
+            return {}
+
+        links: Dict[str, Dict[str, Optional[str]]] = {}
+        unique_urls = sorted(set(source_urls))
+
+        try:
+            response = (
+                self.supabase
+                .table('player_article_sources')
+                .select('source_url,player_id')
+                .in_('source_url', unique_urls)
+                .execute()
+            )
+            for row in response.data or []:
+                source_url = row.get('source_url')
+                player_id = row.get('player_id')
+                if source_url and player_id and source_url not in links:
+                    links[source_url] = {
+                        'player_id': player_id,
+                        'player_candidate_id': None,
+                        'player_name': None,
+                    }
+        except Exception as e:
+            print(f"[DB] player_article_sources 紐付け取得エラー: {e}")
+
+        try:
+            response = (
+                self.supabase
+                .table('player_candidate_sources')
+                .select('source_url,player_candidate_id')
+                .in_('source_url', unique_urls)
+                .execute()
+            )
+            candidate_ids = sorted({
+                row.get('player_candidate_id')
+                for row in (response.data or [])
+                if row.get('player_candidate_id')
+            })
+            candidate_name_map: Dict[str, str] = {}
+            if candidate_ids:
+                candidate_response = (
+                    self.supabase
+                    .table('player_candidates')
+                    .select('id,name,player_id')
+                    .in_('id', candidate_ids)
+                    .execute()
+                )
+                for candidate in candidate_response.data or []:
+                    if candidate.get('id'):
+                        candidate_name_map[candidate['id']] = candidate.get('name') or ''
+
+            for row in response.data or []:
+                source_url = row.get('source_url')
+                candidate_id = row.get('player_candidate_id')
+                if source_url and candidate_id and source_url not in links:
+                    links[source_url] = {
+                        'player_id': None,
+                        'player_candidate_id': candidate_id,
+                        'player_name': candidate_name_map.get(candidate_id),
+                    }
+        except Exception as e:
+            print(f"[DB] player_candidate_sources 紐付け取得エラー: {e}")
+
+        return links
+
     def insert_attention_signals(self, articles: List[Dict[str, Any]]) -> Dict[str, int]:
         rows = []
         for article in articles:
@@ -710,6 +868,7 @@ class SupabaseAttentionSignalStore:
         source_urls = [row[4] for row in rows if len(row) > 4 and row[4]]
         crawled_id_map = SupabaseCrawledArticleStore(dummy_mode=False).get_article_id_map_by_urls(source_urls)
         existing_keys = self._get_existing_keys(source_urls)
+        player_link_map = self._get_player_links_by_source_urls(source_urls)
 
         records = []
         seen_keys: Set[Tuple[str, str]] = set()
@@ -732,11 +891,12 @@ class SupabaseAttentionSignalStore:
             seen_keys.add(key)
 
             teams = [team.strip() for team in str(row[7] or '').split(',') if team.strip()]
+            player_link = player_link_map.get(source_url, {})
             records.append({
                 'crawled_article_id': crawled_id_map.get(source_url),
-                'player_id': None,
-                'player_candidate_id': None,
-                'player_name': None,
+                'player_id': player_link.get('player_id'),
+                'player_candidate_id': player_link.get('player_candidate_id'),
+                'player_name': player_link.get('player_name'),
                 'source_url': source_url,
                 'source_title': str(row[3] or '').strip() or None,
                 'published_at': self._format_published_at(row[0]),
