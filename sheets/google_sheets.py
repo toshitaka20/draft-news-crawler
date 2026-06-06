@@ -129,12 +129,32 @@ def setup_attention_sheet():
         existing_values = attention_sheet.get_all_values()
         if not existing_values:
             attention_sheet.append_row(headers)
+        elif existing_values[0][:len(headers)] != headers:
+            attention_sheet.insert_row(headers, 1)
 
         return attention_sheet
 
     except Exception as e:
         print(f"[エラー] 注目度シート設定失敗: {e}")
         raise
+
+def normalize_attention_row(row: List[Any]) -> List[str]:
+    """
+    AttentionSignalsシートはA-L列の12列固定で出力する。
+    """
+    normalized = []
+    for cell in row[:12]:
+        if isinstance(cell, bool):
+            normalized.append('TRUE' if cell else 'FALSE')
+        elif cell is None:
+            normalized.append('')
+        else:
+            normalized.append(str(cell).strip())
+
+    if len(normalized) < 12:
+        normalized.extend([''] * (12 - len(normalized)))
+
+    return normalized
 
 def update_sheets(articles: List[Dict[str, Any]]):
     """
@@ -307,10 +327,11 @@ def update_sheets(articles: List[Dict[str, Any]]):
             seen_attention = set()
             deduped_attention_rows = []
             for row in all_attention_rows:
-                row_tuple = tuple(row)
+                normalized_row = normalize_attention_row(row)
+                row_tuple = tuple(normalized_row)
                 if row_tuple not in seen_attention:
                     seen_attention.add(row_tuple)
-                    deduped_attention_rows.append(row)
+                    deduped_attention_rows.append(normalized_row)
 
             def add_attention_rows():
                 attention_sheet = setup_attention_sheet()
@@ -318,12 +339,12 @@ def update_sheets(articles: List[Dict[str, Any]]):
                 existing_keys = set()
                 if len(existing_attention_values) > 1:
                     for existing_row in existing_attention_values[1:]:
-                        if len(existing_row) > 11:
-                            existing_keys.add((existing_row[4], existing_row[11]))
+                        normalized_existing_row = normalize_attention_row(existing_row)
+                        existing_keys.add((normalized_existing_row[4], normalized_existing_row[11]))
 
                 new_attention_rows = []
                 for row in deduped_attention_rows:
-                    key = (row[4], row[11]) if len(row) > 11 else tuple(row)
+                    key = (row[4], row[11])
                     if key not in existing_keys:
                         new_attention_rows.append(row)
 
@@ -331,7 +352,9 @@ def update_sheets(articles: List[Dict[str, Any]]):
                     BATCH_SIZE = 50
                     for i in range(0, len(new_attention_rows), BATCH_SIZE):
                         batch = new_attention_rows[i:i+BATCH_SIZE]
-                        attention_sheet.append_rows(batch)
+                        start_row = len(attention_sheet.get_all_values()) + 1
+                        end_row = start_row + len(batch) - 1
+                        attention_sheet.update(f"A{start_row}:L{end_row}", batch)
                         print(f"[DEBUG] 注目度シグナル バッチ {i//BATCH_SIZE + 1}: {len(batch)}件追加")
                         time.sleep(0.5)
                 else:

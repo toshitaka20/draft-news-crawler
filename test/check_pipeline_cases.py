@@ -19,6 +19,7 @@ CASES = [
         "name": "rakuten_scout_comment",
         "expected_scout": True,
         "expected_attention": True,
+        "expected_player": True,
         "title": "愛工大・プロ注目の最速152キロ右腕、8回無失点の快投 楽天スカウト「ストライク先行で緩急も。今後が楽しみ」",
         "body": (
             "愛工大が名城大に3―0で勝った。プロ注目の最速152キロ右腕・岡田雅樹投手"
@@ -31,6 +32,7 @@ CASES = [
         "name": "cbo_comment_12_teams",
         "expected_scout": True,
         "expected_attention": True,
+        "expected_player": True,
         "title": "栗山CBOも来た！全12球団の前で立命大・有馬伽久が完投星",
         "body": (
             "米沢との投げ合いにNPB12球団24人のスカウトが集結し、8球団が複数人態勢を"
@@ -42,6 +44,7 @@ CASES = [
         "name": "front_office_comment_multi_sentence",
         "expected_scout": True,
         "expected_attention": True,
+        "expected_player": True,
         "title": "関大・米沢友翔、スカウト12球団47人の前で快投",
         "body": (
             "ネット裏にはNPB12球団47人が集結。巨人は水野雄仁編成本部長、長野久義編成本部参与ら"
@@ -54,6 +57,7 @@ CASES = [
         "name": "manager_only_should_skip",
         "expected_scout": False,
         "expected_attention": False,
+        "expected_player": False,
         "title": "高校監督がエースを称賛",
         "body": "高校の佐藤監督は「よく投げた。成長した」と話した。選手本人も「次も頑張る」と語った。",
     },
@@ -61,6 +65,7 @@ CASES = [
         "name": "ob_comment_should_skip",
         "expected_scout": False,
         "expected_attention": False,
+        "expected_player": False,
         "title": "解説者が大学生投手を評価",
         "body": "解説者の栗山英樹氏は「いい投手だと思う」と話した。球団視察の記述はない。",
     },
@@ -68,6 +73,7 @@ CASES = [
         "name": "attention_only_no_comment",
         "expected_scout": False,
         "expected_attention": True,
+        "expected_player": True,
         "title": "ドラフト候補対決に12球団が集結",
         "body": "ドラフト候補対決にNPB12球団32人が集結した。スカウトの具体的なコメントはなかった。",
     },
@@ -100,14 +106,20 @@ def main() -> None:
         articles.append(article)
         scout = article["has_scout_comment_candidate"]
         attention = article["has_attention_candidate"]
+        player = article["has_player_candidate"]
         print(f"\n[{case['name']}]")
         print(f"  scout_candidate: {scout} expected={case['expected_scout']}")
         print(f"  attention_candidate: {attention} expected={case['expected_attention']}")
+        print(f"  player_candidate: {player} expected={case['expected_player']}")
         print(f"  attention_rows: {len(article.get('attention_rows', []))}")
         for row in article.get("attention_rows", []):
             print(f"    row: team_count={row[5]} person_count={row[6]} teams={row[7]} score={row[10]}")
 
-        if scout != case["expected_scout"] or attention != case["expected_attention"]:
+        if (
+            scout != case["expected_scout"]
+            or attention != case["expected_attention"]
+            or player != case["expected_player"]
+        ):
             failures.append(case["name"])
 
     if args.db:

@@ -94,6 +94,7 @@ class SupabaseCrawledArticleStore:
                 'date': article.get('date', ''),
                 'scout_comments': article.get('scout_comments', ''),
                 'attention_rows': article.get('attention_rows', []),
+                'player_candidate_rows': article.get('player_candidate_rows', []),
             },
         }
 
@@ -161,6 +162,28 @@ class SupabaseCrawledArticleStore:
         except Exception as e:
             print(f"[DB] crawled_articles 保存エラー: {e}")
             return {'total': len(articles), 'upserted': 0, 'errors': len(articles)}
+
+    def get_article_id_map_by_urls(self, urls: List[str]) -> Dict[str, str]:
+        if self.dummy_mode or self.supabase is None or not urls:
+            return {}
+
+        unique_urls = sorted({url for url in urls if url})
+        try:
+            response = (
+                self.supabase
+                .table('crawled_articles')
+                .select('id,url')
+                .in_('url', unique_urls)
+                .execute()
+            )
+            return {
+                row['url']: row['id']
+                for row in (response.data or [])
+                if row.get('url') and row.get('id')
+            }
+        except Exception as e:
+            print(f"[DB] crawled_articles ID取得エラー: {e}")
+            return {}
 
 class SupabasePlayerLookup:
     """Supabaseを使用した選手ID取得機能"""
@@ -318,6 +341,427 @@ class SupabasePlayerLookup:
         print(f"[{mode_text}] {found_count}/{len(unique_names)}名が登録済み")
         
         return results
+
+class SupabasePlayerCandidateStore:
+    """player_candidates への未登録選手候補保存。"""
+
+    def __init__(self, dummy_mode: bool = False):
+        self.dummy_mode, self.supabase = _init_supabase_client(dummy_mode=dummy_mode)
+        self.player_lookup = SupabasePlayerLookup(dummy_mode=dummy_mode)
+        if not self.dummy_mode:
+            print("✅ Supabaseクライアントを初期化しました（player_candidates）")
+
+    @staticmethod
+    def _clean_text(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @staticmethod
+    def _to_int(value: Any) -> Optional[int]:
+        if value in (None, ''):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _to_confidence(value: Any) -> Optional[float]:
+        if value in (None, ''):
+            return None
+        try:
+            confidence = float(value)
+        except (TypeError, ValueError):
+            return None
+        return max(0.0, min(1.0, confidence))
+
+    @staticmethod
+    def _normalize_category(value: Any) -> Optional[str]:
+        text = SupabasePlayerCandidateStore._clean_text(value)
+        if not text:
+            return None
+        if '高校' in text:
+            return '高校'
+        if '大学' in text:
+            return '大学'
+        if '社会人' in text:
+            return '社会人'
+        if '独立' in text:
+            return '独立リーグ'
+        return text
+
+    @staticmethod
+    def _infer_draft_year(row: Dict[str, Any]) -> Optional[int]:
+        draft_year = SupabasePlayerCandidateStore._to_int(row.get('draft_year'))
+        if draft_year:
+            return draft_year
+
+        published_at = str(row.get('published_at') or '')
+        match = re.search(r'(20\d{2})', published_at)
+        if match:
+            return int(match.group(1))
+
+        return None
+
+    @staticmethod
+    def _candidate_key(name: str, team: Optional[str], draft_year: Optional[int]) -> Tuple[str, str, int]:
+        return (name, team or '', draft_year or 0)
+
+    def _get_existing_candidates(self, rows: List[Dict[str, Any]]) -> Dict[Tuple[str, str, int], str]:
+        if self.dummy_mode or self.supabase is None or not rows:
+            return {}
+
+        names = sorted({row.get('name') for row in rows if row.get('name')})
+        if not names:
+            return {}
+
+        try:
+            response = (
+                self.supabase
+                .table('player_candidates')
+                .select('id,name,team,team_name,draft_year')
+                .in_('name', names)
+                .execute()
+            )
+            return {
+                self._candidate_key(
+                    row.get('name') or '',
+                    row.get('team') or row.get('team_name'),
+                    self._to_int(row.get('draft_year')),
+                ): row['id']
+                for row in (response.data or [])
+                if row.get('id') and row.get('name')
+            }
+        except Exception as e:
+            print(f"[DB] player_candidates 既存取得エラー: {e}")
+            return {}
+
+    def _get_existing_source_keys(self, source_urls: List[str]) -> Set[Tuple[str, str, str]]:
+        if self.dummy_mode or self.supabase is None or not source_urls:
+            return set()
+
+        try:
+            response = (
+                self.supabase
+                .table('player_candidate_sources')
+                .select('player_candidate_id,source_url,evidence')
+                .in_('source_url', sorted(set(source_urls)))
+                .execute()
+            )
+            return {
+                (
+                    row.get('player_candidate_id') or '',
+                    row.get('source_url') or '',
+                    row.get('evidence') or '',
+                )
+                for row in (response.data or [])
+            }
+        except Exception as e:
+            print(f"[DB] player_candidate_sources 既存取得エラー: {e}")
+            return set()
+
+    def insert_unregistered_candidates(self, articles: List[Dict[str, Any]]) -> Dict[str, int]:
+        rows = []
+        for article in articles:
+            rows.extend(article.get('player_candidate_rows', []))
+
+        if not rows:
+            return {'total': 0, 'inserted': 0, 'skipped_existing_players': 0, 'duplicates': 0, 'errors': 0}
+
+        if self.dummy_mode or self.supabase is None:
+            print(f"[DB] player_candidates 保存スキップ（ダミーモード）: {len(rows)}件")
+            return {
+                'total': len(rows),
+                'inserted': 0,
+                'sources_inserted': 0,
+                'skipped_existing_players': 0,
+                'duplicates': 0,
+                'errors': 0,
+            }
+
+        source_urls = [row.get('source_url', '') for row in rows if row.get('source_url')]
+        crawled_id_map = SupabaseCrawledArticleStore(dummy_mode=False).get_article_id_map_by_urls(source_urls)
+        player_id_map = self.player_lookup.lookup_multiple_players([row.get('name', '') for row in rows])
+
+        candidate_inputs = []
+        skipped_existing_players = 0
+        duplicates = 0
+
+        for row in rows:
+            name = self._clean_text(row.get('name'))
+            source_url = self._clean_text(row.get('source_url'))
+            if not name or not source_url:
+                continue
+
+            player_id = player_id_map.get(name)
+            if player_id is not None:
+                skipped_existing_players += 1
+                continue
+
+            team_name = self._clean_text(row.get('team_name'))
+            team = self._clean_text(row.get('team')) or team_name
+            category = self._normalize_category(row.get('category') or row.get('article_category'))
+            draft_year = self._infer_draft_year(row)
+            key = self._candidate_key(name, team, draft_year)
+            candidate_inputs.append((key, row, {
+                'player_id': None,
+                'name': name,
+                'name_kana': self._clean_text(row.get('name_kana')),
+                'team': team,
+                'team_name': team_name,
+                'category': category,
+                'draft_year': draft_year,
+                'school_year': self._clean_text(row.get('school_year')),
+                'position': self._clean_text(row.get('position')),
+                'throws': self._clean_text(row.get('throws')),
+                'bats': self._clean_text(row.get('bats')),
+                'height_cm': self._to_int(row.get('height_cm')),
+                'weight_kg': self._to_int(row.get('weight_kg')),
+                'birth_date': self._clean_text(row.get('birth_date')),
+                'fastball_max': self._to_int(row.get('fastball_max')),
+                'description': self._clean_text(row.get('description')),
+                'source_count': 0,
+                'latest_source_url': source_url,
+                'latest_source_title': self._clean_text(row.get('source_title')),
+                'latest_evidence': self._clean_text(row.get('evidence')),
+                'latest_confidence': self._to_confidence(row.get('confidence')),
+                'status': 'pending',
+                'extracted_raw': row.get('extracted_raw') or row,
+            }))
+
+        existing_candidates = self._get_existing_candidates([item[2] for item in candidate_inputs])
+        candidate_records = []
+        seen_candidate_keys: Set[Tuple[str, str, int]] = set()
+        for key, _row, record in candidate_inputs:
+            if key in existing_candidates or key in seen_candidate_keys:
+                duplicates += 1
+                continue
+            seen_candidate_keys.add(key)
+            candidate_records.append(record)
+
+        inserted = 0
+        try:
+            if candidate_records:
+                response = self.supabase.table('player_candidates').insert(candidate_records).execute()
+                inserted_rows = response.data or candidate_records
+                inserted = len(inserted_rows)
+                for row in inserted_rows:
+                    if row.get('id') and row.get('name'):
+                        key = self._candidate_key(
+                            row.get('name') or '',
+                            row.get('team') or row.get('team_name'),
+                            self._to_int(row.get('draft_year')),
+                        )
+                        existing_candidates[key] = row['id']
+                print(f"[DB] player_candidates 保存完了: {inserted}件")
+                existing_candidates.update(self._get_existing_candidates([item[2] for item in candidate_inputs]))
+        except Exception as e:
+            print(f"[DB] player_candidates 保存エラー: {e}")
+            return {
+                'total': len(rows),
+                'inserted': 0,
+                'sources_inserted': 0,
+                'skipped_existing_players': skipped_existing_players,
+                'duplicates': duplicates,
+                'errors': len(candidate_records),
+            }
+
+        source_records = []
+        seen_source_keys: Set[Tuple[str, str, str]] = set()
+        existing_source_keys = self._get_existing_source_keys(source_urls)
+        for key, row, _record in candidate_inputs:
+            candidate_id = existing_candidates.get(key)
+            source_url = self._clean_text(row.get('source_url'))
+            if not candidate_id or not source_url:
+                continue
+
+            evidence = self._clean_text(row.get('evidence'))
+            source_key = (candidate_id, source_url, evidence or '')
+            if source_key in seen_source_keys or source_key in existing_source_keys:
+                duplicates += 1
+                continue
+            seen_source_keys.add(source_key)
+
+            source_records.append({
+                'player_candidate_id': candidate_id,
+                'crawled_article_id': crawled_id_map.get(source_url),
+                'source_url': source_url,
+                'source_title': self._clean_text(row.get('source_title')),
+                'published_at': SupabaseCrawledArticleStore._format_published_at(row.get('published_at') or ''),
+                'source': self._clean_text(row.get('source')),
+                'category': self._clean_text(row.get('article_category') or row.get('category')),
+                'evidence': evidence,
+                'confidence': self._to_confidence(row.get('confidence')),
+                'extracted_raw': row.get('extracted_raw') or row,
+            })
+
+        sources_inserted = 0
+        try:
+            if source_records:
+                response = self.supabase.table('player_candidate_sources').insert(source_records).execute()
+                sources_inserted = len(response.data or source_records)
+                print(f"[DB] player_candidate_sources 保存完了: {sources_inserted}件")
+        except Exception as e:
+            print(f"[DB] player_candidate_sources 保存エラー: {e}")
+            return {
+                'total': len(rows),
+                'inserted': inserted,
+                'sources_inserted': 0,
+                'skipped_existing_players': skipped_existing_players,
+                'duplicates': duplicates,
+                'errors': len(source_records),
+            }
+
+        self._refresh_candidate_source_summaries(sorted({record['player_candidate_id'] for record in source_records}))
+        return {
+            'total': len(rows),
+            'inserted': inserted,
+            'sources_inserted': sources_inserted,
+            'skipped_existing_players': skipped_existing_players,
+            'duplicates': duplicates,
+            'errors': 0,
+        }
+
+    def _refresh_candidate_source_summaries(self, candidate_ids: List[str]) -> None:
+        if self.dummy_mode or self.supabase is None or not candidate_ids:
+            return
+
+        for candidate_id in candidate_ids:
+            try:
+                response = (
+                    self.supabase
+                    .table('player_candidate_sources')
+                    .select('source_url,source_title,evidence,confidence,created_at')
+                    .eq('player_candidate_id', candidate_id)
+                    .order('created_at', desc=True)
+                    .execute()
+                )
+                sources = response.data or []
+                latest = sources[0] if sources else {}
+                self.supabase.table('player_candidates').update({
+                    'source_count': len(sources),
+                    'latest_source_url': latest.get('source_url'),
+                    'latest_source_title': latest.get('source_title'),
+                    'latest_evidence': latest.get('evidence'),
+                    'latest_confidence': latest.get('confidence'),
+                }).eq('id', candidate_id).execute()
+            except Exception as e:
+                print(f"[DB] player_candidates source_count更新エラー: {candidate_id}: {e}")
+
+class SupabaseAttentionSignalStore:
+    """attention_signals への注目度シグナル保存。"""
+
+    def __init__(self, dummy_mode: bool = False):
+        self.dummy_mode, self.supabase = _init_supabase_client(dummy_mode=dummy_mode)
+        if not self.dummy_mode:
+            print("✅ Supabaseクライアントを初期化しました（attention_signals）")
+
+    @staticmethod
+    def _to_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ('true', '1', 'yes', 'y')
+
+    @staticmethod
+    def _to_int(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _format_published_at(date_value: Any) -> Optional[str]:
+        return SupabaseCrawledArticleStore._format_published_at(str(date_value or ''))
+
+    def _get_existing_keys(self, source_urls: List[str]) -> Set[Tuple[str, str]]:
+        if self.dummy_mode or self.supabase is None or not source_urls:
+            return set()
+
+        try:
+            response = (
+                self.supabase
+                .table('attention_signals')
+                .select('source_url,evidence_hash')
+                .in_('source_url', sorted(set(source_urls)))
+                .execute()
+            )
+            return {
+                (row.get('source_url') or '', row.get('evidence_hash') or '')
+                for row in (response.data or [])
+            }
+        except Exception as e:
+            print(f"[DB] attention_signals 既存取得エラー: {e}")
+            return set()
+
+    def insert_attention_signals(self, articles: List[Dict[str, Any]]) -> Dict[str, int]:
+        rows = []
+        for article in articles:
+            rows.extend(article.get('attention_rows', []))
+
+        if not rows:
+            return {'total': 0, 'inserted': 0, 'duplicates': 0, 'errors': 0}
+
+        if self.dummy_mode or self.supabase is None:
+            print(f"[DB] attention_signals 保存スキップ（ダミーモード）: {len(rows)}件")
+            return {'total': len(rows), 'inserted': 0, 'duplicates': 0, 'errors': 0}
+
+        source_urls = [row[4] for row in rows if len(row) > 4 and row[4]]
+        crawled_id_map = SupabaseCrawledArticleStore(dummy_mode=False).get_article_id_map_by_urls(source_urls)
+        existing_keys = self._get_existing_keys(source_urls)
+
+        records = []
+        seen_keys: Set[Tuple[str, str]] = set()
+        duplicates = 0
+
+        for row in rows:
+            if len(row) < 12:
+                continue
+
+            source_url = str(row[4] or '').strip()
+            evidence = str(row[11] or '').strip()
+            if not source_url or not evidence:
+                continue
+
+            evidence_hash = hashlib.md5(evidence.encode('utf-8')).hexdigest()
+            key = (source_url, evidence_hash)
+            if key in seen_keys or key in existing_keys:
+                duplicates += 1
+                continue
+            seen_keys.add(key)
+
+            teams = [team.strip() for team in str(row[7] or '').split(',') if team.strip()]
+            records.append({
+                'crawled_article_id': crawled_id_map.get(source_url),
+                'player_id': None,
+                'player_candidate_id': None,
+                'player_name': None,
+                'source_url': source_url,
+                'source_title': str(row[3] or '').strip() or None,
+                'published_at': self._format_published_at(row[0]),
+                'source': str(row[1] or '').strip() or None,
+                'category': str(row[2] or '').strip() or None,
+                'team_count': self._to_int(row[5]),
+                'person_count': self._to_int(row[6]),
+                'teams': teams,
+                'has_npb': self._to_bool(row[8]),
+                'has_mlb': self._to_bool(row[9]),
+                'score': self._to_int(row[10]),
+                'evidence': evidence,
+            })
+
+        if not records:
+            return {'total': len(rows), 'inserted': 0, 'duplicates': duplicates, 'errors': 0}
+
+        try:
+            response = self.supabase.table('attention_signals').insert(records).execute()
+            inserted = len(response.data or records)
+            print(f"[DB] attention_signals 保存完了: {inserted}件")
+            return {'total': len(rows), 'inserted': inserted, 'duplicates': duplicates, 'errors': 0}
+        except Exception as e:
+            print(f"[DB] attention_signals 保存エラー: {e}")
+            return {'total': len(rows), 'inserted': 0, 'duplicates': duplicates, 'errors': len(records)}
 
 class SupabaseScoutCommentInserter:
     """Supabaseにスカウトコメントを直接INSERTする機能"""
@@ -593,6 +1037,16 @@ def insert_scout_comments_directly(scout_rows: List[List[str]], dummy_mode: bool
     """スカウトコメントをデータベースに直接INSERT"""
     inserter = SupabaseScoutCommentInserter(dummy_mode=dummy_mode)
     return inserter.insert_multiple_scout_comments(scout_rows)
+
+def insert_player_candidates(articles: List[Dict[str, Any]], dummy_mode: bool = False) -> Dict[str, int]:
+    """未登録選手候補を player_candidates にINSERT"""
+    store = SupabasePlayerCandidateStore(dummy_mode=dummy_mode)
+    return store.insert_unregistered_candidates(articles)
+
+def insert_attention_signals(articles: List[Dict[str, Any]], dummy_mode: bool = False) -> Dict[str, int]:
+    """注目度シグナルを attention_signals にINSERT"""
+    store = SupabaseAttentionSignalStore(dummy_mode=dummy_mode)
+    return store.insert_attention_signals(articles)
 
 def get_existing_crawled_urls_by_source(source: str, dummy_mode: bool = False) -> Set[str]:
     """crawled_articles から指定ソースの既存URLを取得"""

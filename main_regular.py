@@ -9,10 +9,12 @@ from scraper.hochi import fetch_hochi_articles
 from scraper.nikkan_sports import fetch_all_nikkan_sports_articles
 from scraper.sanspo import fetch_all_sanspo_articles
 from scraper.chunichi import fetch_all_chunichi_articles
-from ai.gemini import process_articles_with_ai
+from ai.gemini import process_articles_with_ai, process_player_candidates_with_ai
 from sheets.google_sheets import update_sheets, get_existing_urls_by_source
 from database.supabase_client import (
     get_existing_crawled_urls_by_source,
+    insert_attention_signals,
+    insert_player_candidates,
     insert_scout_comments_directly,
     upsert_crawled_articles,
 )
@@ -113,15 +115,39 @@ def main():
         # 9. 全記事をマージ
         all_processed = processed_keyword_articles + no_keyword_articles
 
-        # 10. 生記事をDBへ保存（URL重複判定の正本）
-        print("\n8. 生記事データベース保存中...")
+        # 10. 選手候補抽出（未登録候補レビュー用）
+        print("\n8. 選手候補抽出中...")
+        all_processed = process_player_candidates_with_ai(all_processed)
+        player_candidate_count = sum(len(a.get('player_candidate_rows', [])) for a in all_processed)
+        print(f"選手候補抽出数: {player_candidate_count}件")
+
+        # 11. 生記事をDBへ保存（URL重複判定の正本）
+        print("\n9. 生記事データベース保存中...")
         crawled_results = upsert_crawled_articles(all_processed)
         print(f"  対象件数: {crawled_results['total']}件")
         print(f"  保存件数: {crawled_results['upserted']}件")
         print(f"  エラー件数: {crawled_results['errors']}件")
 
-        # 11. スカウトコメントをデータベースに直接INSERT
-        print("\n9. スカウトコメントデータベース挿入中...")
+        # 12. 注目度シグナルをDBへ保存
+        print("\n10. 注目度シグナルデータベース保存中...")
+        attention_results = insert_attention_signals(all_processed)
+        print(f"  対象件数: {attention_results['total']}件")
+        print(f"  保存件数: {attention_results['inserted']}件")
+        print(f"  重複除外: {attention_results['duplicates']}件")
+        print(f"  エラー件数: {attention_results['errors']}件")
+
+        # 13. 未登録選手候補をDBへ保存
+        print("\n11. 選手候補データベース保存中...")
+        player_candidate_results = insert_player_candidates(all_processed)
+        print(f"  対象件数: {player_candidate_results['total']}件")
+        print(f"  候補保存件数: {player_candidate_results['inserted']}件")
+        print(f"  記事根拠保存件数: {player_candidate_results.get('sources_inserted', 0)}件")
+        print(f"  登録済み選手スキップ: {player_candidate_results['skipped_existing_players']}件")
+        print(f"  重複除外: {player_candidate_results['duplicates']}件")
+        print(f"  エラー件数: {player_candidate_results['errors']}件")
+
+        # 14. スカウトコメントをデータベースに直接INSERT
+        print("\n12. スカウトコメントデータベース挿入中...")
         all_scout_rows = []
         for article in all_processed:
             scout_rows = article.get('scout_rows', [])
@@ -144,8 +170,8 @@ def main():
         else:
             print("スカウトコメントが見つかりませんでした。")
         
-        # 12. Google Sheets更新
-        print("\n10. Google Sheets更新中...")
+        # 15. Google Sheets更新
+        print("\n13. Google Sheets更新中...")
         update_sheets(all_processed)
         
         print(f"\n=== 既存5社処理完了 ===")

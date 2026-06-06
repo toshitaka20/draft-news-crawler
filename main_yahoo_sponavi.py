@@ -5,10 +5,12 @@ Yahoo!スポーツナビ専用記事収集・AIコメント抽出システム
 
 from typing import List, Dict, Any
 from scraper.yahoo_sponavi import YahooSponaviScraper
-from ai.gemini import process_articles_with_ai
+from ai.gemini import process_articles_with_ai, process_player_candidates_with_ai
 from sheets.google_sheets import update_sheets, get_existing_urls_by_source
 from database.supabase_client import (
     get_existing_crawled_urls_by_source,
+    insert_attention_signals,
+    insert_player_candidates,
     insert_scout_comments_directly,
     upsert_crawled_articles,
 )
@@ -112,15 +114,39 @@ def main():
         # 5. 全記事をマージ
         all_processed = processed_keyword_articles + no_keyword_articles
 
-        # 6. 生記事をDBへ保存（URL重複判定の正本）
-        print("\n4. 生記事データベース保存中...")
+        # 6. 選手候補抽出（未登録候補レビュー用）
+        print("\n4. 選手候補抽出中...")
+        all_processed = process_player_candidates_with_ai(all_processed)
+        player_candidate_count = sum(len(a.get('player_candidate_rows', [])) for a in all_processed)
+        print(f"選手候補抽出数: {player_candidate_count}件")
+
+        # 7. 生記事をDBへ保存（URL重複判定の正本）
+        print("\n5. 生記事データベース保存中...")
         crawled_results = upsert_crawled_articles(all_processed)
         print(f"  対象件数: {crawled_results['total']}件")
         print(f"  保存件数: {crawled_results['upserted']}件")
         print(f"  エラー件数: {crawled_results['errors']}件")
 
-        # 7. スカウトコメントをデータベースに直接INSERT
-        print("\n5. スカウトコメントデータベース挿入中...")
+        # 8. 注目度シグナルをDBへ保存
+        print("\n6. 注目度シグナルデータベース保存中...")
+        attention_results = insert_attention_signals(all_processed)
+        print(f"  対象件数: {attention_results['total']}件")
+        print(f"  保存件数: {attention_results['inserted']}件")
+        print(f"  重複除外: {attention_results['duplicates']}件")
+        print(f"  エラー件数: {attention_results['errors']}件")
+
+        # 9. 未登録選手候補をDBへ保存
+        print("\n7. 選手候補データベース保存中...")
+        player_candidate_results = insert_player_candidates(all_processed)
+        print(f"  対象件数: {player_candidate_results['total']}件")
+        print(f"  候補保存件数: {player_candidate_results['inserted']}件")
+        print(f"  記事根拠保存件数: {player_candidate_results.get('sources_inserted', 0)}件")
+        print(f"  登録済み選手スキップ: {player_candidate_results['skipped_existing_players']}件")
+        print(f"  重複除外: {player_candidate_results['duplicates']}件")
+        print(f"  エラー件数: {player_candidate_results['errors']}件")
+
+        # 10. スカウトコメントをデータベースに直接INSERT
+        print("\n8. スカウトコメントデータベース挿入中...")
         all_scout_rows = []
         for article in all_processed:
             scout_rows = article.get('scout_rows', [])
@@ -143,8 +169,8 @@ def main():
         else:
             print("スカウトコメントが見つかりませんでした。")
         
-        # 8. Google Sheets更新
-        print("\n6. Google Sheets更新中...")
+        # 11. Google Sheets更新
+        print("\n9. Google Sheets更新中...")
         update_sheets(all_processed)
         
         print(f"\n=== Yahoo!スポーツナビ処理完了 ===")

@@ -90,21 +90,28 @@ create table public.crawled_articles (
 
 記事から抽出された未登録選手候補を保存する。
 
+このテーブルは **記事ごとの抽出結果** ではなく、**選手候補ごとの集約レコード** として扱う。
+同じ選手が複数の記事で言及された場合、`player_candidates` は1行のまま維持し、記事ごとの根拠は後述の `player_candidate_sources` に追加する。
+
 用途:
 
 - `players` に未登録の選手を仮登録する。
 - AI抽出ミスや表記揺れを人間が確認する。
 - 信頼度が高いものだけ `players` に昇格する。
+- 昇格時に `players` へコピーしやすい形で、最低限の `players` 互換カラムを持つ。
 
 推奨カラム:
 
 ```sql
 create table public.player_candidates (
   id uuid primary key default gen_random_uuid(),
-  player_id uuid null,
+  player_id uuid null references public.players(id),
   name text not null,
   name_kana text null,
+  team text null,
   team_name text null,
+  category text null,
+  draft_year integer null,
   school_year text null,
   position text null,
   throws text null,
@@ -112,16 +119,22 @@ create table public.player_candidates (
   height_cm integer null,
   weight_kg integer null,
   birth_date date null,
-  source_url text not null,
-  source_title text null,
-  evidence text null,
-  confidence numeric null,
+  fastball_max integer null,
+  description text null,
+  source_count integer not null default 0,
+  latest_source_url text null,
+  latest_source_title text null,
+  latest_evidence text null,
+  latest_confidence numeric null,
   status text not null default 'pending',
   extracted_raw jsonb null,
   created_at timestamp with time zone not null default now(),
   updated_at timestamp with time zone not null default now(),
   constraint player_candidates_status_check check (
     status = any (array['pending', 'approved', 'rejected', 'promoted'])
+  ),
+  constraint player_candidates_confidence_check check (
+    latest_confidence is null or (latest_confidence >= 0 and latest_confidence <= 1)
   )
 );
 ```
@@ -130,18 +143,68 @@ create table public.player_candidates (
 
 ```sql
 create index idx_player_candidates_name on public.player_candidates (name);
+create index idx_player_candidates_team on public.player_candidates (team);
+create index idx_player_candidates_category on public.player_candidates (category);
+create index idx_player_candidates_draft_year on public.player_candidates (draft_year);
 create index idx_player_candidates_status on public.player_candidates (status);
-create unique index idx_player_candidates_unique_source
-  on public.player_candidates (name, coalesce(team_name, ''), source_url);
+create unique index idx_player_candidates_unique_candidate
+  on public.player_candidates (name, coalesce(team, team_name, ''), coalesce(draft_year, 0));
 ```
 
 運用方針:
 
 - 最初は `players` へ直接INSERTしない。
 - `player_candidates.status = pending` として保存する。
+- 既存 `players` に同名・表記揺れ一致する選手がいれば `player_candidates` には保存しない。
+- 既存 `player_candidates` に同じ `name + team + draft_year` の候補があれば新規候補行は作らず、`player_candidate_sources` だけ追加する。
 - 人間確認後、または高信頼度条件を満たした場合のみ `players` へ昇格する。
 
-### 3. `attention_signals`
+### 3. `player_candidate_sources`
+
+`player_candidates` がどの記事から抽出されたかを保存する。
+
+用途:
+
+- 同じ選手候補に対して複数記事の根拠を蓄積する。
+- 候補レビュー時に「どの記事で、どの文から抽出されたか」を確認する。
+- 未承認候補・承認済み選手のタイムライン表示の元データにする。
+
+推奨カラム:
+
+```sql
+create table public.player_candidate_sources (
+  id uuid primary key default gen_random_uuid(),
+  player_candidate_id uuid not null references public.player_candidates(id) on delete cascade,
+  crawled_article_id uuid null references public.crawled_articles(id),
+  source_url text not null,
+  source_title text null,
+  published_at timestamp with time zone null,
+  source text null,
+  category text null,
+  evidence text null,
+  confidence numeric null,
+  extracted_raw jsonb null,
+  created_at timestamp with time zone not null default now(),
+  constraint player_candidate_sources_confidence_check check (
+    confidence is null or (confidence >= 0 and confidence <= 1)
+  )
+);
+```
+
+推奨index:
+
+```sql
+create index idx_player_candidate_sources_candidate_id
+  on public.player_candidate_sources (player_candidate_id);
+create index idx_player_candidate_sources_crawled_article_id
+  on public.player_candidate_sources (crawled_article_id);
+create index idx_player_candidate_sources_source_url
+  on public.player_candidate_sources (source_url);
+create unique index idx_player_candidate_sources_unique
+  on public.player_candidate_sources (player_candidate_id, source_url, coalesce(md5(evidence), ''));
+```
+
+### 4. `attention_signals`
 
 視察球団数・人数・球団名・注目度を保存する。
 
@@ -157,6 +220,9 @@ create unique index idx_player_candidates_unique_source
 create table public.attention_signals (
   id uuid primary key default gen_random_uuid(),
   crawled_article_id uuid null references public.crawled_articles(id),
+  player_id uuid null references public.players(id),
+  player_candidate_id uuid null references public.player_candidates(id),
+  player_name text null,
   source_url text not null,
   source_title text null,
   published_at timestamp with time zone null,
@@ -173,7 +239,13 @@ create table public.attention_signals (
 );
 ```
 
-### 4. `draft_watch_article_candidates`
+実装メモ:
+
+- 最初は記事単位で保存する。
+- 選手名が明確に抽出できるようになったら、`player_id` または `player_candidate_id` を埋める。
+- `player_candidate_id` が埋まると、未承認候補のレビュー画面でも注目度シグナルをタイムライン表示できる。
+
+### 5. `draft_watch_article_candidates`
 
 Draft-Watchで記事化したい候補を保存する。
 
@@ -215,6 +287,18 @@ create table public.draft_watch_article_candidates (
 3. 公開する場合、既存の `public.articles` にINSERTする。
 4. `draft_watch_article_candidates.status = published` に更新する。
 
+### 6. `draft_watch_article_candidate_sources`
+
+Draft-Watch記事候補と元記事の多対多を保存する。
+
+`draft_watch_article_candidates.source_urls` は一覧表示や簡易upsert用に残してよいが、正規化された出典管理はこのテーブルで行う。
+
+用途:
+
+- 複数の外部記事から1つのDraft-Watch記事候補を作る。
+- どの記事が主要ソースで、どの記事が補助情報かを区別する。
+- 下書き生成時の引用元・参照元を追跡する。
+
 ## 選手抽出の方針
 
 スカウトコメント抽出と選手候補抽出は分離する。
@@ -236,7 +320,11 @@ has_player_candidate=True の記事で選手候補抽出
   ↓
 players 既存チェック
   ↓
-未登録なら player_candidates に保存
+未登録なら player_candidates を検索
+  ↓
+同じ候補がなければ player_candidates に作成
+  ↓
+記事ごとの根拠を player_candidate_sources に保存
   ↓
 has_scout_comment_candidate=True の記事だけスカウトコメント抽出
   ↓
@@ -256,6 +344,148 @@ scout_comments に保存
 - `○球団○人`
 - `has_attention_candidate=True`
 - `has_scout_comment_candidate=True`
+
+## 選手候補の承認・昇格
+
+`player_candidates` は `players` の下書きそのものではなく、未承認の選手候補マスタとして扱う。
+
+承認時の基本フロー:
+
+```text
+player_candidates.status = pending
+  ↓
+人間が候補内容を確認・補正
+  ↓
+players に正式登録
+  ↓
+player_candidates.player_id に players.id を保存
+  ↓
+player_candidates.status = promoted に更新
+```
+
+承認時に `player_candidates.player_id` を埋めることで、候補時代に `player_candidate_sources` に蓄積された記事根拠は、正式な `players` と間接的に紐付く。
+
+例:
+
+```text
+players
+  ↑ player_candidates.player_id
+player_candidates
+  ↓ player_candidate_sources
+crawled_articles
+```
+
+`article_players` は既存の Draft-Watch公開記事 `articles` と `players` を紐付けるためのテーブルであり、外部ニュース記事 `crawled_articles` のタイムライン用途とは分ける。
+
+使い分け:
+
+- 外部ニュース記事: `player_candidate_sources` / `attention_signals` / `scout_comments`
+- Draft-Watch公開記事: `article_players`
+
+## 選手タイムラインの方針
+
+選手ページでは、外部ニュース記事とDraft-Watch内の記事の両方を時系列で見せたい。
+
+ただし、タイムライン専用の実体テーブルを作って全データをコピーするのは避ける。
+各情報の正本は既存テーブルに残し、タイムラインは view またはAPI側のUNIONクエリで作る。
+
+理由:
+
+- `scout_comments` はスカウトコメントの正本として既に存在する。
+- `attention_signals` は注目度シグナルの正本として持つ。
+- `player_candidate_sources` は記事由来の選手候補根拠の正本として持つ。
+- タイムライン実体テーブルへコピーすると、更新・削除・修正時に二重管理になる。
+
+推奨view:
+
+```sql
+create or replace view public.player_timeline_items as
+select
+  pc.player_id,
+  pc.id as player_candidate_id,
+  pcs.crawled_article_id,
+  pcs.source_url,
+  coalesce(pcs.source_title, ca.title) as title,
+  coalesce(pcs.published_at, ca.published_at) as published_at,
+  coalesce(pcs.source, ca.source) as source,
+  coalesce(pcs.category, ca.category) as category,
+  'candidate'::text as item_type,
+  pcs.evidence as body,
+  pcs.confidence as confidence,
+  null::integer as score,
+  pcs.created_at
+from public.player_candidate_sources pcs
+join public.player_candidates pc on pc.id = pcs.player_candidate_id
+left join public.crawled_articles ca on ca.id = pcs.crawled_article_id
+
+union all
+
+select
+  sc.player_id,
+  null::uuid as player_candidate_id,
+  ca.id as crawled_article_id,
+  sc.source_url,
+  ca.title,
+  coalesce(sc.published_at, ca.published_at) as published_at,
+  ca.source,
+  ca.category,
+  'scout_comment'::text as item_type,
+  concat_ws(' ', sc.team_name, sc.scout_name, sc.comment) as body,
+  null::numeric as confidence,
+  null::integer as score,
+  sc.created_at
+from public.scout_comments sc
+left join public.crawled_articles ca on ca.url = sc.source_url
+where sc.player_id is not null
+
+union all
+
+select
+  ats.player_id,
+  ats.player_candidate_id,
+  ats.crawled_article_id,
+  ats.source_url,
+  coalesce(ats.source_title, ca.title) as title,
+  coalesce(ats.published_at, ca.published_at) as published_at,
+  coalesce(ats.source, ca.source) as source,
+  coalesce(ats.category, ca.category) as category,
+  'attention'::text as item_type,
+  ats.evidence as body,
+  null::numeric as confidence,
+  ats.score,
+  ats.created_at
+from public.attention_signals ats
+left join public.crawled_articles ca on ca.id = ats.crawled_article_id
+where ats.player_id is not null or ats.player_candidate_id is not null;
+```
+
+正式選手ページでは `player_id` で取得する。
+
+```sql
+select *
+from public.player_timeline_items
+where player_id = :player_id
+order by published_at desc nulls last, created_at desc;
+```
+
+未承認候補レビュー画面では `player_candidate_id` で取得する。
+
+```sql
+select *
+from public.player_timeline_items
+where player_candidate_id = :player_candidate_id
+order by published_at desc nulls last, created_at desc;
+```
+
+タイムラインに入れる情報:
+
+- `candidate`: AIが記事から抽出した選手候補根拠
+- `scout_comment`: スカウトコメント
+- `attention`: NPB/MLB視察、視察球団数、注目度スコア
+- `draft_watch_article`: Draft-Watch公開記事。これは `articles` + `article_players` を追加でUNIONすることで対応する。
+
+`scout_comments` はタイムラインテーブルへ移さない。
+`scout_comments` はスカウトコメントの正本として維持し、タイムラインでは view で読み出す。
 
 ## Draft-Watch記事化の方針
 
@@ -342,7 +572,8 @@ Sheetsは正本ではなく、レビュー用ビューにする。
 ### Phase 2: 選手候補をDBへ保存する
 
 - `extract_player_candidates_with_ai()` を追加する。
-- `player_candidates` にupsertする。
+- `player_candidates` を候補単位でupsertする。
+- 記事ごとの根拠は `player_candidate_sources` に保存する。
 - `players` への自動昇格はまだ行わない。
 
 ### Phase 3: 注目度シグナルをDBへ保存する
@@ -353,10 +584,18 @@ Sheetsは正本ではなく、レビュー用ビューにする。
 ### Phase 4: Draft-Watch記事候補を作る
 
 - `draft_watch_article_candidates` を作成する。
+- `draft_watch_article_candidate_sources` を作成する。
 - 注目度スコア、スカウト会議検出、同一選手クラスタリングから下書きを生成する。
 - 公開は手動確認にする。
 
-### Phase 5: Sheetsをレビュー用だけに縮小する
+### Phase 5: 選手タイムラインを作る
+
+- `player_timeline_items` view を作成する。
+- 未承認候補は `player_candidate_id` でタイムラインを確認する。
+- 承認済み選手は `player_id` でタイムラインを確認する。
+- Draft-Watch公開記事は `articles` + `article_players` をUNIONして追加する。
+
+### Phase 6: Sheetsをレビュー用だけに縮小する
 
 - 全記事出力をやめる。
 - 確認が必要な候補だけSheetsに出す。
@@ -369,7 +608,10 @@ Sheetsは正本ではなく、レビュー用ビューにする。
 1. `crawled_articles` の設計・作成
 2. URL重複判定をSheetsからDBへ移行
 3. `player_candidates` の設計・作成
-4. 選手候補抽出AIの追加
-5. 未登録選手を `player_candidates` に保存
+4. `player_candidate_sources` の設計・作成
+5. 選手候補抽出AIの追加
+6. 未登録選手を `player_candidates` に保存
+7. 記事ごとの根拠を `player_candidate_sources` に保存
 
 Draft-Watch記事化は、その後に `attention_signals` と `draft_watch_article_candidates` を使って実装する。
+選手ページのタイムラインは `player_timeline_items` view を使って実装する。

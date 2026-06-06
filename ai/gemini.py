@@ -4,6 +4,8 @@ Gemini API連携・コメント抽出
 
 import google.generativeai as genai  # type: ignore
 import csv
+import json
+import re
 from typing import List, Dict, Any, Optional
 from config import GEMINI_API_KEY, GEMINI_MODEL
 
@@ -139,6 +141,95 @@ URL: {link}
         print(f"[Generative AI Geminiエラー] {e}")
         return None
 
+
+def _parse_json_array(text: str) -> List[Dict[str, Any]]:
+    if not text:
+        return []
+
+    cleaned = text.strip()
+    fenced_match = re.search(r'```(?:json)?\s*(.*?)\s*```', cleaned, flags=re.DOTALL)
+    if fenced_match:
+        cleaned = fenced_match.group(1).strip()
+
+    if cleaned == "[]":
+        return []
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        array_match = re.search(r'\[.*\]', cleaned, flags=re.DOTALL)
+        if not array_match:
+            return []
+        try:
+            parsed = json.loads(array_match.group(0))
+        except json.JSONDecodeError:
+            return []
+
+    if not isinstance(parsed, list):
+        return []
+
+    return [item for item in parsed if isinstance(item, dict)]
+
+
+def extract_player_candidates_with_gemini(article_text: str, title: str, published: str, link: str) -> List[Dict[str, Any]]:
+    """
+    記事からDraft-Watch未登録候補になりうる選手情報を抽出する。
+    """
+    try:
+        model = setup_gemini()
+
+        prompt = f"""
+あなたは日本野球ドラフト候補の構造化データ抽出AIです。
+以下の記事から、Draft-Watchの選手DBに登録・確認すべき選手候補だけを抽出してください。
+
+【抽出対象】
+- プロ注目、今秋ドラフト候補、ドラフト上位候補、1位候補、指名候補として言及された選手
+- NPB/MLBスカウト視察やスカウトコメントの対象になっている選手
+- 最速150キロ以上、強打者、主将、全国大会実績など、ドラフト文脈で明確に注目されている選手
+
+【除外対象】
+- プロ入り済み選手、監督、コーチ、スカウト、解説者
+- 記事内で名前だけ出る対戦相手やチームメイトで、ドラフト注目文脈がない人物
+- 姓だけ、名だけなどフルネームが不明な人物
+
+【出力形式】
+JSON配列のみを返してください。説明文、Markdown、コードブロックは不要です。
+候補がない場合は [] を返してください。
+
+各要素のキー:
+- name: フルネーム。必須。
+- name_kana: 記事にあれば。なければ null。
+- team_name: 所属校・大学・社会人チーム。なければ null。
+- category: 高校、大学、社会人、独立リーグ、その他のいずれか。推定できなければ null。
+- draft_year: ドラフト対象年。記事・学年から推定できなければ null。
+- school_year: 学年。例: "4年", "3年"。なければ null。
+- position: 守備位置。例: "投手", "内野手", "外野手", "捕手"。なければ null。
+- throws: 投。例: "右", "左"。なければ null。
+- bats: 打。例: "右", "左"。なければ null。
+- height_cm: 身長cmの数値。なければ null。
+- weight_kg: 体重kgの数値。なければ null。
+- birth_date: YYYY-MM-DD。なければ null。
+- fastball_max: 最速球速km/hの数値。投手で記事にあれば。なければ null。
+- description: 選手候補としての短い要約。なければ null。
+- evidence: 抽出根拠になる記事中の短い文。
+- confidence: 0.0-1.0。
+
+【記事情報】
+タイトル: {title}
+公開日: {published}
+URL: {link}
+
+【本文】
+{article_text}
+"""
+        response = model.generate_content(prompt)
+        return _parse_json_array(response.text)
+
+    except Exception as e:
+        print(f"[Generative AI Gemini 選手候補抽出エラー] {e}")
+        return []
+
+
 def process_articles_with_ai(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     記事リストにAIコメント抽出を適用（スカウトコメント候補記事のみ）
@@ -201,3 +292,66 @@ def process_articles_with_ai(articles: List[Dict[str, Any]]) -> List[Dict[str, A
     
     print(f"[DEBUG] has_scout_comment_candidate=True の記事数: {keyword_count}")
     return processed_articles 
+
+
+def process_player_candidates_with_ai(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    選手候補記事にAI抽出を適用し、article['player_candidate_rows']へ格納する。
+    """
+    processed_articles = []
+    candidate_count = 0
+
+    for article in articles:
+        player_candidate_rows: List[Dict[str, Any]] = []
+
+        if article.get('has_player_candidate', False):
+            candidate_count += 1
+            try:
+                full_text = f"{article.get('title', '')}\n\n{article.get('body', '')}"
+                print(f"[DEBUG] 選手候補AI処理実行: {article.get('title', '')[:50]}...")
+                extracted = extract_player_candidates_with_gemini(
+                    full_text,
+                    article.get('title', ''),
+                    article.get('date', ''),
+                    article.get('url', ''),
+                )
+
+                for item in extracted:
+                    name = (item.get('name') or '').strip()
+                    if not name or name in ('不明', 'unknown', 'Unknown'):
+                        continue
+                    player_candidate_rows.append({
+                        'name': name,
+                        'name_kana': item.get('name_kana'),
+                        'team_name': item.get('team_name'),
+                        'team': item.get('team') or item.get('team_name'),
+                        'category': item.get('category'),
+                        'draft_year': item.get('draft_year'),
+                        'school_year': item.get('school_year'),
+                        'position': item.get('position'),
+                        'throws': item.get('throws'),
+                        'bats': item.get('bats'),
+                        'height_cm': item.get('height_cm'),
+                        'weight_kg': item.get('weight_kg'),
+                        'birth_date': item.get('birth_date'),
+                        'fastball_max': item.get('fastball_max'),
+                        'description': item.get('description'),
+                        'source_url': article.get('url', ''),
+                        'source_title': article.get('title', ''),
+                        'published_at': article.get('date', ''),
+                        'source': article.get('source', ''),
+                        'article_category': article.get('category', ''),
+                        'evidence': item.get('evidence'),
+                        'confidence': item.get('confidence'),
+                        'extracted_raw': item,
+                    })
+            except Exception as e:
+                print(f"[エラー] 選手候補AI処理失敗: {article.get('title', '')} - {e}")
+        else:
+            print(f"[DEBUG] 選手候補なし、AI処理スキップ: {article.get('title', '')[:50]}...")
+
+        article['player_candidate_rows'] = player_candidate_rows
+        processed_articles.append(article)
+
+    print(f"[DEBUG] has_player_candidate=True の記事数: {candidate_count}")
+    return processed_articles

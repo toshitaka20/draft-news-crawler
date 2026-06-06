@@ -47,6 +47,11 @@ ATTENTION_PATTERN = re.compile(
     r'全球団|12球団|十二球団|日米\d+球団|日米[０-９]+球団|'
     r'MLBスカウト|メジャースカウト|メジャー.*スカウト|米球団)'
 )
+PLAYER_CANDIDATE_PATTERN = re.compile(
+    r'(プロ注目|今秋(?:の)?ドラフト|ドラフト候補|ドラフト上位候補|上位候補|'
+    r'1位候補|１位候補|指名候補|リストアップ|スカウト視察|'
+    r'最速(?:15[0-9]|１[５-９][０-９])キロ|最速(?:15[0-9]|１[５-９][０-９])km)'
+)
 JAPANESE_TEAM_NAMES = [
     '巨人', '阪神', '中日', '広島', 'DeNA', '横浜DeNA', 'ヤクルト',
     '西武', '日本ハム', 'ロッテ', 'ソフトバンク', 'オリックス', '楽天'
@@ -199,6 +204,19 @@ def has_attention_candidate(text: str) -> bool:
     return False
 
 
+def has_player_candidate(text: str) -> bool:
+    """
+    選手候補抽出AIに回す価値がありそうな記事か判定する。
+    """
+    if not text:
+        return False
+
+    if PLAYER_CANDIDATE_PATTERN.search(text):
+        return True
+
+    return has_attention_candidate(text) or has_scout_comment_candidate(text)
+
+
 def calculate_attention_score(team_count: int, person_count: int, teams: List[str], has_mlb: bool, has_comment_candidate: bool) -> int:
     score = 0
     if team_count >= 12:
@@ -310,8 +328,10 @@ def annotate_article_signals(article: Dict[str, Any]) -> Dict[str, Any]:
     text = f"{article.get('title', '')}\n\n{article.get('body', '')}"
     scout_candidate = has_scout_comment_candidate(text)
     attention_candidate = has_attention_candidate(text)
+    player_candidate = has_player_candidate(text)
     article['has_scout_comment_candidate'] = scout_candidate
     article['has_attention_candidate'] = attention_candidate
+    article['has_player_candidate'] = player_candidate
     article['has_keywords'] = scout_candidate or attention_candidate
     article['attention_rows'] = extract_attention_rows(article) if attention_candidate else []
     return article
