@@ -25,6 +25,7 @@ create table if not exists public.player_candidates (
   draft_year integer null,
   school_year text null,
   position text null,
+  positions text[] null,
   throws text null,
   bats text null,
   height_cm integer null,

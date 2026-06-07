@@ -201,11 +201,12 @@ JSON配列のみを返してください。説明文、Markdown、コードブ�
 - name_kana: 記事にあれば。なければ null。
 - team_name: 所属校・大学・社会人チーム。なければ null。
 - category: 高校、大学、社会人、独立リーグ、その他のいずれか。推定できなければ null。
-- draft_year: ドラフト対象年。記事・学年から推定できなければ null。
-- school_year: 学年。例: "4年", "3年"。なければ null。
-- position: 守備位置。例: "投手", "内野手", "外野手", "捕手"。なければ null。
-- throws: 投。例: "右", "左"。なければ null。
-- bats: 打。例: "右", "左"。なければ null。
+- draft_year: ドラフト対象年。高校3年、大学4年、社会人の大卒2年目・高卒3年目は記事公開年。そこから逆算できなければ null。
+- school_year: 学年・社会人年数。例: "4年", "3年", "社会人2年目", "高卒3年目"。なければ null。
+- positions: 守備位置の配列。例: ["投手"], ["投手", "外野手"], ["内野手"]。なければ []。
+- position: 互換用。主な守備位置を1つ。例: "投手", "内野手", "外野手", "捕手"。なければ null。
+- throws: 投。必ず R または L。右投は R、左投は L。不明なら null。
+- bats: 打。必ず R、L、S のいずれか。右打は R、左打は L、両打は S。不明なら null。
 - height_cm: 身長cmの数値。なければ null。
 - weight_kg: 体重kgの数値。なければ null。
 - birth_date: YYYY-MM-DD。なければ null。
@@ -328,6 +329,7 @@ def process_player_candidates_with_ai(articles: List[Dict[str, Any]]) -> List[Di
                         'category': item.get('category'),
                         'draft_year': item.get('draft_year'),
                         'school_year': item.get('school_year'),
+                        'positions': item.get('positions') or [],
                         'position': item.get('position'),
                         'throws': item.get('throws'),
                         'bats': item.get('bats'),

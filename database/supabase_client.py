@@ -393,16 +393,124 @@ class SupabasePlayerCandidateStore:
         return text
 
     @staticmethod
+    def _published_year(row: Dict[str, Any]) -> Optional[int]:
+        published_at = str(row.get('published_at') or row.get('date') or '')
+        match = re.search(r'(20\d{2})', published_at)
+        if match:
+            return int(match.group(1))
+        return None
+
+    @staticmethod
+    def _extract_year_number(value: Any) -> Optional[int]:
+        text = SupabasePlayerCandidateStore._clean_text(value)
+        if not text:
+            return None
+        match = re.search(r'(\d+)\s*年', text)
+        if match:
+            return int(match.group(1))
+        return SupabasePlayerCandidateStore._to_int(text)
+
+    @staticmethod
     def _infer_draft_year(row: Dict[str, Any]) -> Optional[int]:
         draft_year = SupabasePlayerCandidateStore._to_int(row.get('draft_year'))
         if draft_year:
             return draft_year
 
-        published_at = str(row.get('published_at') or '')
-        match = re.search(r'(20\d{2})', published_at)
-        if match:
-            return int(match.group(1))
+        published_year = SupabasePlayerCandidateStore._published_year(row)
+        school_year = SupabasePlayerCandidateStore._extract_year_number(row.get('school_year'))
+        if not published_year:
+            return None
 
+        category = SupabasePlayerCandidateStore._normalize_category(
+            row.get('category') or row.get('article_category')
+        )
+        school_year_text = SupabasePlayerCandidateStore._clean_text(row.get('school_year')) or ''
+
+        target_year = None
+        if school_year:
+            if category == '高校':
+                target_year = 3
+            elif category == '大学':
+                target_year = 4
+            elif category == '社会人':
+                if '高卒' in school_year_text:
+                    target_year = 3
+                elif '大卒' in school_year_text:
+                    target_year = 2
+                elif school_year in (2, 3):
+                    target_year = school_year
+
+        if target_year:
+            return published_year + max(target_year - school_year, 0)
+
+        draft_context = ' '.join(
+            str(row.get(key) or '')
+            for key in ('school_year', 'description', 'evidence', 'source_title')
+        )
+        if re.search(r'来年(?:の)?ドラフト', draft_context):
+            return published_year + 1
+        if re.search(r'今秋ドラフト|今年(?:の)?ドラフト|今ドラフト', draft_context):
+            return published_year
+
+        return None
+
+    @staticmethod
+    def _normalize_positions(value: Any) -> List[str]:
+        if value in (None, ''):
+            return []
+        if isinstance(value, list):
+            raw_values = value
+        else:
+            text = str(value)
+            raw_values = re.split(r'[,、/・\s]+', text)
+
+        positions: List[str] = []
+        aliases = [
+            ('投手', ('投手', 'ピッチャー', 'P')),
+            ('捕手', ('捕手', 'キャッチャー', 'C')),
+            ('内野手', ('内野手', '一塁手', '二塁手', '三塁手', '遊撃手', 'ファースト', 'セカンド', 'サード', 'ショート', 'IF')),
+            ('外野手', ('外野手', '左翼手', '中堅手', '右翼手', 'レフト', 'センター', 'ライト', 'OF')),
+        ]
+
+        for raw in raw_values:
+            text = SupabasePlayerCandidateStore._clean_text(raw)
+            if not text:
+                continue
+            normalized = None
+            for canonical, words in aliases:
+                if any(word in text for word in words):
+                    normalized = canonical
+                    break
+            normalized = normalized or text
+            if normalized not in positions:
+                positions.append(normalized)
+
+        return positions
+
+    @staticmethod
+    def _normalize_throw(value: Any) -> Optional[str]:
+        text = SupabasePlayerCandidateStore._clean_text(value)
+        if not text:
+            return None
+        upper = text.upper()
+        if upper == 'R' or '右' in text:
+            return 'R'
+        if upper == 'L' or '左' in text:
+            return 'L'
+        return None
+
+    @staticmethod
+    def _normalize_bat(value: Any) -> Optional[str]:
+        text = SupabasePlayerCandidateStore._clean_text(value)
+        if not text:
+            return None
+        upper = text.upper()
+        if upper == 'S' or '両' in text or 'スイッチ' in text:
+            return 'S'
+        if upper == 'R' or '右' in text:
+            return 'R'
+        if upper == 'L' or '左' in text:
+            return 'L'
         return None
 
     @staticmethod
@@ -541,6 +649,8 @@ class SupabasePlayerCandidateStore:
             team = self._clean_text(row.get('team')) or team_name
             category = self._normalize_category(row.get('category') or row.get('article_category'))
             draft_year = self._infer_draft_year(row)
+            positions = self._normalize_positions(row.get('positions') or row.get('position'))
+            position = '、'.join(positions) if positions else self._clean_text(row.get('position'))
             key = self._candidate_key(name, team, draft_year)
             candidate_inputs.append((key, row, {
                 'player_id': None,
@@ -551,9 +661,10 @@ class SupabasePlayerCandidateStore:
                 'category': category,
                 'draft_year': draft_year,
                 'school_year': self._clean_text(row.get('school_year')),
-                'position': self._clean_text(row.get('position')),
-                'throws': self._clean_text(row.get('throws')),
-                'bats': self._clean_text(row.get('bats')),
+                'position': position,
+                'positions': positions,
+                'throws': self._normalize_throw(row.get('throws')),
+                'bats': self._normalize_bat(row.get('bats')),
                 'height_cm': self._to_int(row.get('height_cm')),
                 'weight_kg': self._to_int(row.get('weight_kg')),
                 'birth_date': self._clean_text(row.get('birth_date')),

@@ -353,6 +353,7 @@ SQL: `database/schema_data_pipeline_phase2_4.sql`
 | `draft_year` | `int4` | Nullable |
 | `school_year` | `text` | Nullable |
 | `position` | `text` | Nullable |
+| `positions` | `_text` | Nullable |
 | `throws` | `text` | Nullable |
 | `bats` | `text` | Nullable |
 | `height_cm` | `int4` | Nullable |

@@ -114,6 +114,7 @@ create table public.player_candidates (
   draft_year integer null,
   school_year text null,
   position text null,
+  positions text[] null,
   throws text null,
   bats text null,
   height_cm integer null,
@@ -157,6 +158,10 @@ create unique index idx_player_candidates_unique_candidate
 - `player_candidates.status = pending` として保存する。
 - 既存 `players` に同名・表記揺れ一致する選手がいれば `player_candidates` には保存しない。
 - 既存 `player_candidates` に同じ `name + team + draft_year` の候補があれば新規候補行は作らず、`player_candidate_sources` だけ追加する。
+- `draft_year` をドラフト対象年の正本にする。高校3年、大学4年、社会人の大卒2年目・高卒3年目は記事公開年を入れ、下級生は公開年から逆算する。
+- `school_year` はAI抽出根拠・参考情報として残すが、レビューや重複判定では `draft_year` を使う。
+- 守備位置は `positions text[]` を正本にする。旧互換のため `position text` も保持し、複数の場合は `投手、外野手` のように表示用文字列を入れる。
+- 投打は `throws = R/L`, `bats = R/L/S` に正規化して保存する。`S` は両打。
 - 人間確認後、または高信頼度条件を満たした場合のみ `players` へ昇格する。
 
 ### 3. `player_candidate_sources`
