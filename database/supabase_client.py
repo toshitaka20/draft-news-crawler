@@ -650,7 +650,6 @@ class SupabasePlayerCandidateStore:
             category = self._normalize_category(row.get('category') or row.get('article_category'))
             draft_year = self._infer_draft_year(row)
             positions = self._normalize_positions(row.get('positions') or row.get('position'))
-            position = '、'.join(positions) if positions else self._clean_text(row.get('position'))
             key = self._candidate_key(name, team, draft_year)
             candidate_inputs.append((key, row, {
                 'player_id': None,
@@ -661,7 +660,6 @@ class SupabasePlayerCandidateStore:
                 'category': category,
                 'draft_year': draft_year,
                 'school_year': self._clean_text(row.get('school_year')),
-                'position': position,
                 'positions': positions,
                 'throws': self._normalize_throw(row.get('throws')),
                 'bats': self._normalize_bat(row.get('bats')),
@@ -1077,6 +1075,60 @@ class SupabaseScoutCommentInserter:
         except Exception as e:
             print(f"[重複チェックエラー] {e}")
             return False  # エラーの場合は重複としない
+
+    def lookup_candidate_ids(self, scout_rows: List[List[str]]) -> Dict[Tuple[str, str], str]:
+        """(player_name, source_url) から player_candidate_id を取得"""
+        if self.dummy_mode or not scout_rows:
+            return {}
+
+        source_urls = sorted({
+            row[6].strip()
+            for row in scout_rows
+            if len(row) >= 7 and row[6].strip()
+        })
+        if not source_urls:
+            return {}
+
+        try:
+            response = (
+                self.supabase
+                .table('player_candidate_sources')
+                .select('source_url,player_candidate_id')
+                .in_('source_url', source_urls)
+                .execute()
+            )
+            candidate_ids = sorted({
+                row.get('player_candidate_id')
+                for row in (response.data or [])
+                if row.get('player_candidate_id')
+            })
+            candidate_name_map: Dict[str, str] = {}
+            if candidate_ids:
+                candidate_response = (
+                    self.supabase
+                    .table('player_candidates')
+                    .select('id,name')
+                    .in_('id', candidate_ids)
+                    .execute()
+                )
+                candidate_name_map = {
+                    row['id']: self.player_lookup.normalize_name(row.get('name') or '')
+                    for row in (candidate_response.data or [])
+                    if row.get('id')
+                }
+        except Exception as e:
+            print(f"[DB] scout_comments 候補紐付け取得エラー: {e}")
+            return {}
+
+        candidate_map: Dict[Tuple[str, str], str] = {}
+        for row in response.data or []:
+            source_url = (row.get('source_url') or '').strip()
+            candidate_id = row.get('player_candidate_id')
+            player_name = candidate_name_map.get(candidate_id or '')
+            if player_name and source_url and candidate_id:
+                candidate_map[(player_name, source_url)] = candidate_id
+
+        return candidate_map
     
     def insert_scout_comment(self, scout_data: Dict[str, str]) -> bool:
         """単一のスカウトコメントをINSERT"""
@@ -1096,6 +1148,8 @@ class SupabaseScoutCommentInserter:
             # INSERT実行
             insert_data = {
                 'player_id': scout_data.get('player_id'),
+                'player_candidate_id': scout_data.get('player_candidate_id'),
+                'player_name': scout_data.get('player_name'),
                 'team_name': scout_data['team_name'],
                 'scout_name': scout_data['scout_name'],
                 'comment': scout_data['comment'],
@@ -1124,6 +1178,7 @@ class SupabaseScoutCommentInserter:
         # 選手名を抽出して選手IDを一括取得
         player_names = [row[0] for row in scout_rows if len(row) > 0]
         player_id_map = self.player_lookup.lookup_multiple_players(player_names)
+        candidate_id_map = self.lookup_candidate_ids(scout_rows)
         
         results = {"total": len(scout_rows), "inserted": 0, "duplicates": 0, "errors": 0}
         
@@ -1145,10 +1200,15 @@ class SupabaseScoutCommentInserter:
             
             # 選手IDを取得
             player_id = player_id_map.get(player_name)
+            normalized_player_name = self.player_lookup.normalize_name(player_name)
+            player_candidate_id = None
+            if player_id is None:
+                player_candidate_id = candidate_id_map.get((normalized_player_name, article_url.strip()))
             
             # データを正規化
             scout_data = {
                 'player_id': player_id,
+                'player_candidate_id': player_candidate_id,
                 'player_name': player_name,
                 'team_name': scout_team.strip(),
                 'scout_name': scout_name.strip(),

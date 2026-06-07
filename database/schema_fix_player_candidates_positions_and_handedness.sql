@@ -1,26 +1,41 @@
 -- Add normalized player candidate positions and handedness fields.
 --
 -- positions is the canonical multi-position field. The legacy position text
--- column is kept for compatibility with existing review screens.
+-- column is migrated into positions and then removed.
 
 alter table public.player_candidates
   add column if not exists positions text[] null;
 
-update public.player_candidates
-set positions = case
-  when position is null or btrim(position) = '' then positions
-  when position like '%投手%' and position like '%外野手%' then array['投手', '外野手']::text[]
-  when position like '%投手%' and position like '%内野手%' then array['投手', '内野手']::text[]
-  when position like '%投手%' and position like '%捕手%' then array['投手', '捕手']::text[]
-  when position like '%捕手%' then array['捕手']::text[]
-  when position like '%内野手%' then array['内野手']::text[]
-  when position like '%外野手%' then array['外野手']::text[]
-  when position like '%投手%' then array['投手']::text[]
-  else array[position]::text[]
-end
-where positions is null
-  and position is not null
-  and btrim(position) <> '';
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'player_candidates'
+      and column_name = 'position'
+  ) then
+    update public.player_candidates
+    set positions = case
+      when position is null or btrim(position) = '' then positions
+      when position like '%投手%' and position like '%外野手%' then array['投手', '外野手']::text[]
+      when position like '%投手%' and position like '%内野手%' then array['投手', '内野手']::text[]
+      when position like '%投手%' and position like '%捕手%' then array['投手', '捕手']::text[]
+      when position like '%捕手%' then array['捕手']::text[]
+      when position like '%内野手%' then array['内野手']::text[]
+      when position like '%外野手%' then array['外野手']::text[]
+      when position like '%投手%' then array['投手']::text[]
+      else array[position]::text[]
+    end
+    where positions is null
+      and position is not null
+      and btrim(position) <> '';
+  end if;
+end;
+$$;
+
+alter table public.player_candidates
+  drop column if exists position;
 
 update public.player_candidates
 set throws = case

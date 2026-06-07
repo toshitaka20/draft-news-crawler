@@ -113,7 +113,6 @@ create table public.player_candidates (
   category text null,
   draft_year integer null,
   school_year text null,
-  position text null,
   positions text[] null,
   throws text null,
   bats text null,
@@ -160,7 +159,7 @@ create unique index idx_player_candidates_unique_candidate
 - 既存 `player_candidates` に同じ `name + team + draft_year` の候補があれば新規候補行は作らず、`player_candidate_sources` だけ追加する。
 - `draft_year` をドラフト対象年の正本にする。高校3年、大学4年、社会人の大卒2年目・高卒3年目は記事公開年を入れ、下級生は公開年から逆算する。
 - `school_year` はAI抽出根拠・参考情報として残すが、レビューや重複判定では `draft_year` を使う。
-- 守備位置は `positions text[]` を正本にする。旧互換のため `position text` も保持し、複数の場合は `投手、外野手` のように表示用文字列を入れる。
+- 守備位置は `positions text[]` を正本にする。単数でも配列で保存し、`position text` は持たない。
 - 投打は `throws = R/L`, `bats = R/L/S` に正規化して保存する。`S` は両打。
 - 人間確認後、または高信頼度条件を満たした場合のみ `players` へ昇格する。
 
@@ -249,6 +248,29 @@ create table public.attention_signals (
 - 最初は記事単位で保存する。
 - 保存済みの `player_article_sources` / `player_candidate_sources` と同じ `source_url` があれば、`player_id` または `player_candidate_id` を自動で埋める。
 - `player_candidate_id` が埋まると、未承認候補のレビュー画面でも注目度シグナルをタイムライン表示できる。
+
+### 4.5. `scout_comments` の候補リンク
+
+`scout_comments` はスカウトコメントの正本として維持する。
+未登録選手へのスカウトコメントも承認後に正式選手へ引き継げるよう、既存の `player_id` に加えて `player_candidate_id` と `player_name` を持つ。
+
+```sql
+alter table public.scout_comments
+  add column player_candidate_id uuid null references public.player_candidates(id) on delete set null,
+  add column player_name text null;
+```
+
+保存ルール:
+
+- 抽出選手が `players` に存在する場合は `player_id` を入れる。
+- `players` に存在せず、同じ `source_url` と選手名で `player_candidate_sources` に候補根拠がある場合は `player_candidate_id` を入れる。
+- 候補承認時は `scout_comments.player_candidate_id` をキーに `player_id` を更新する。
+
+承認後の反映:
+
+```sql
+select public.promote_player_candidate_links(:player_candidate_id, :player_id);
+```
 
 ### 5. `draft_watch_article_candidates`
 
@@ -396,7 +418,7 @@ crawled_articles
 
 理由:
 
-- `scout_comments` はスカウトコメントの正本として既に存在する。
+- `scout_comments` はスカウトコメントの正本として既に存在する。未承認候補へのコメントは `player_candidate_id`、承認後は `player_id` でも参照できる。
 - `attention_signals` は注目度シグナルの正本として持つ。
 - `player_candidate_sources` は記事由来の選手候補根拠の正本として持つ。
 - `player_article_sources` は既存 `players` に紐付いた外部記事根拠の正本として持つ。
@@ -448,7 +470,7 @@ union all
 
 select
   sc.player_id,
-  null::uuid as player_candidate_id,
+  sc.player_candidate_id,
   ca.id as crawled_article_id,
   sc.source_url,
   ca.title,
@@ -462,7 +484,7 @@ select
   sc.created_at
 from public.scout_comments sc
 left join public.crawled_articles ca on ca.url = sc.source_url
-where sc.player_id is not null
+where sc.player_id is not null or sc.player_candidate_id is not null
 
 union all
 

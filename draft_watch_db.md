@@ -80,6 +80,8 @@
 |------|------|-------------|
 | `id` | `uuid` | Primary |
 | `player_id` | `uuid` |  Nullable |
+| `player_candidate_id` | `uuid` | Nullable, references `player_candidates(id)` |
+| `player_name` | `text` | Nullable |
 | `team_name` | `text` |  |
 | `scout_name` | `text` |  |
 | `comment` | `text` |  |
@@ -352,7 +354,6 @@ SQL: `database/schema_data_pipeline_phase2_4.sql`
 | `category` | `text` | Nullable |
 | `draft_year` | `int4` | Nullable |
 | `school_year` | `text` | Nullable |
-| `position` | `text` | Nullable |
 | `positions` | `_text` | Nullable |
 | `throws` | `text` | Nullable |
 | `bats` | `text` | Nullable |

@@ -46,7 +46,7 @@ union all
 
 select
   sc.player_id,
-  null::uuid as player_candidate_id,
+  sc.player_candidate_id,
   ca.id as crawled_article_id,
   sc.source_url,
   ca.title,
@@ -60,7 +60,7 @@ select
   sc.created_at
 from public.scout_comments sc
 left join public.crawled_articles ca on ca.url = sc.source_url
-where sc.player_id is not null
+where sc.player_id is not null or sc.player_candidate_id is not null
 
 union all
 
