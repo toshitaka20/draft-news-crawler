@@ -261,14 +261,21 @@ def research_player_candidates(candidate_ids: List[str], dummy_mode=False) -> Di
 def commit_player_promotions(candidate_ids: List[str], dummy_mode=False) -> Dict[str, int]: ...
 ```
 
-### 5-5. `main_promote.py`
+### 5-5. `main_promote.py`（実装済み・CLI一気通貫運用）
+
+当面は CLI だけで「候補選択 → リサーチ → 本テーブル登録」を完結させる。リサーチ・JSON作成は **Claude Code が担当**し、CLIは候補一覧・取り込み・昇格を担う（アプリ=draft-watch からの `workflow_dispatch` 起動も §6 に設計として残す）。
+
 ```bash
-python main_promote.py --mode research --candidate-ids "id1,id2,id3"
-python main_promote.py --mode commit   --candidate-ids "id1,id2"
+python main_promote.py --mode list [--status all]                 # 候補一覧（既定 pending）
+python main_promote.py --mode promote --file output/promote_drafts/xxx.json   # import+commit を一発（推奨）
+# 分割実行したい場合:
+python main_promote.py --mode import-draft --file output/promote_drafts/xxx.json
+python main_promote.py --mode commit --candidate-ids "id1,id2"
 ```
-- `--mode research`: 各候補について全プロバイダをリサーチ → 構造化 → マージ → `save_research_result`
-- `--mode commit`: 各候補について `commit_promotion`
-- 候補IDは `--candidate-ids`（カンマ区切り）。未指定時は環境変数 `CANDIDATE_IDS` をフォールバック。
+- `--mode list`: 候補選択の補助（`list_promotion_candidates`）。
+- `--mode promote`: `promote_player_from_draft`（import_draft → commit_promotion を連続実行）。
+- `--mode import-draft` / `commit`: 取り込みと昇格を分けて実行。
+- **将来 §10 で `--mode research`（4サイト自動リサーチ＋Gemini構造化）を追加**すると、同じ JSON 経路に乗せて自動化できる。
 
 ---
 

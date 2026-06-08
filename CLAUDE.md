@@ -15,6 +15,10 @@ PYTHONPATH=. venv/bin/python3 main_yahoo_sponavi.py
 PYTHONPATH=. venv/bin/python3 main_draft_watch.py
 PYTHONPATH=. venv/bin/python3 main_draft_watch.py --regenerate          # 既存draft候補を再生成
 PYTHONPATH=. venv/bin/python3 main_draft_watch.py --regenerate-missing  # 本文未生成のみ
+
+# 選手候補の昇格（Phase 6）。リサーチ・JSON作成は Claude Code が担当
+PYTHONPATH=. venv/bin/python3 main_promote.py --mode list                                       # 候補一覧（pending）
+PYTHONPATH=. venv/bin/python3 main_promote.py --mode promote --file output/promote_drafts/xxx.json  # import+commit一発
 ```
 
 ## 実行時の注意

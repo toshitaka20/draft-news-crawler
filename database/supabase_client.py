@@ -2143,6 +2143,22 @@ class SupabasePlayerPromotionStore:
             print(f"[DB] player_candidates 取得エラー: {e}")
             return None
 
+    def list_candidates(self, status: str = 'pending', limit: int = 50) -> List[Dict[str, Any]]:
+        """昇格対象の候補一覧を返す（候補選択の補助）。status='all' で全件。"""
+        if self.dummy_mode or self.supabase is None:
+            return []
+        try:
+            query = self.supabase.table('player_candidates').select(
+                'id,name,team,category,draft_year,status,research_status,player_id'
+            )
+            if status and status != 'all':
+                query = query.eq('status', status)
+            res = query.order('created_at', desc=True).limit(limit).execute()
+            return res.data or []
+        except Exception as e:
+            print(f"[DB] player_candidates 一覧取得エラー: {e}")
+            return []
+
     def import_draft(self, payload: Dict[str, Any]) -> bool:
         """昇格案JSON を player_candidates.research_payload に保存し research_status='ready' にする。"""
         candidate_id = (payload or {}).get('candidate_id')
@@ -2298,6 +2314,20 @@ def commit_player_promotions(candidate_ids: List[str], dummy_mode: bool = False)
             print(f"[Promotion] commitエラー {cid}: {e}")
             stats['errors'] += 1
     return stats
+
+
+def list_promotion_candidates(status: str = 'pending', limit: int = 50, dummy_mode: bool = False) -> List[Dict[str, Any]]:
+    """昇格対象候補の一覧を返す（Phase 6 候補選択の補助）。"""
+    store = SupabasePlayerPromotionStore(dummy_mode=dummy_mode)
+    return store.list_candidates(status=status, limit=limit)
+
+
+def promote_player_from_draft(payload: Dict[str, Any], dummy_mode: bool = False) -> Optional[str]:
+    """昇格案JSON を取り込み（import）、そのまま昇格（commit）まで一気に行う（Phase 6 一気通貫）。"""
+    store = SupabasePlayerPromotionStore(dummy_mode=dummy_mode)
+    if not store.import_draft(payload):
+        return None
+    return store.commit_promotion(payload.get('candidate_id'))
 
 
 def generate_scout_comment_sql_with_resolved_ids(scout_rows: List[List[str]], dummy_mode: bool = False) -> str:
