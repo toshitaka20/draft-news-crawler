@@ -87,9 +87,9 @@ def main():
             print("新しい記事が見つかりませんでした。")
             return
         
-        # 6. 高度な重複除去（既存記事との比較含む）
+        # 6. 高度な重複除去（Sheets全件との比較は重く、URL/ハッシュ/類似度の重複除去で十分なため無効化）
         print("\n6. 高度な重複除去中...")
-        unique_articles = smart_deduplicate_articles(all_articles, include_existing_comparison=True)
+        unique_articles = smart_deduplicate_articles(all_articles, include_existing_comparison=False)
         print(f"重複除去後記事数: {len(unique_articles)}")
         
         if not unique_articles:
