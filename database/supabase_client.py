@@ -516,7 +516,12 @@ class SupabasePlayerCandidateStore:
 
     @staticmethod
     def _candidate_key(name: str, team: Optional[str], draft_year: Optional[int]) -> Tuple[str, str, int]:
-        return (name, team or '', draft_year or 0)
+        # 氏名はスペース等を除去して正規化（「松山 哲」と「松山哲」を同一視し重複候補を防ぐ）。
+        # チーム名もスペースを除去（略称ゆれ＝慶應義塾大/慶大 は別問題で、昇格時に find_existing_player が名寄せ）。
+        from utils import normalize_player_key
+        nname = normalize_player_key(name or '')
+        nteam = re.sub(r'\s+', '', team or '')
+        return (nname, nteam, draft_year or 0)
 
     def _get_existing_candidates(self, rows: List[Dict[str, Any]]) -> Dict[Tuple[str, str, int], str]:
         if self.dummy_mode or self.supabase is None or not rows:
@@ -527,11 +532,12 @@ class SupabasePlayerCandidateStore:
             return {}
 
         try:
+            # 氏名の表記ゆれ（スペース有無等）に対応するため name 完全一致では絞らず、
+            # 既存候補を取得して正規化キー（_candidate_key）で突き合わせる。
             response = (
                 self.supabase
                 .table('player_candidates')
                 .select('id,name,team,team_name,draft_year')
-                .in_('name', names)
                 .execute()
             )
             return {

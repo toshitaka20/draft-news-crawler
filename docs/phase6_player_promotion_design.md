@@ -126,7 +126,9 @@ import-draft が取り込み、commit がこれを展開する正規形。例: `
 
 JSON項目ルール（`CLAUDE.md` と同期）:
 - 不明値は推測せず `null`。各 stats/achievement に `source_url` を付ける。
-- `stats.season`: `spring`/`summer`/`fall`（英語）。`stats.tournament`: 必須（リーグ名など。`null`にしない）。
+- `stats.season`: `spring`/`summer`/`fall`（英語・DB側 NOT NULL）。**season別に分けられない年度集計は stats に入れない**。`stats.tournament`: 必須（リーグ名など。`null`にしない）。
+- **投手成績と打撃成績は別レコード**（1行に混在させない。投手＝`innings`/`era`/`strikeouts`、打撃＝`at_bats`/`hits`/`avg` 等の列で区別）。`stats.period` は書かない（commit時に選手 category から自動付与）。
+- 指標（防御率/WHIP/出塁率/長打率/OPS）は**アプリが内訳から再計算**するため内訳を入れる。投手＝`earned_runs`/`hits_allowed`/`walks`/`hit_by_pitch`/`walks_plus_hit_by_pitch`、打撃＝`walks`/`hit_by_pitch`/`sacrifice_flies`/`doubles`/`triples`/`batter_strikeouts`。
 - `achievements.type`: `title` / `national_tournament` / `samurai_japan`。
 - `rank`: 運営が手動設定。リサーチでは埋めず commit 時に **0 固定**。
 - `declared`: プロ志望表明または進路の記載がなければ `true`、プロ以外の進路が判明していれば `false`。
@@ -148,7 +150,10 @@ JSON項目ルール（`CLAUDE.md` と同期）:
 - `throws`/`bats`: `右`→`R` / `左`→`L` / `両`→`S`
 - `position` は日本語のまま（players も `外野手`/`投手` 等の日本語表記）
 
-stats/achievements は payload の各配列を、stats列・player_achievements列（`type`/`year`/`tournament_name`/`result`）にマップして `player_id` を付与しINSERT（出典は payload 側に残す。stats本体には出典列が無いため）。
+stats/achievements は payload の各配列を、stats列・player_achievements列（`type`/`year`/`tournament_name`/`result`）にマップして `player_id` を付与しINSERT（出典は payload 側に残す。stats本体には出典列が無いため）。stats は `period`（段階 `high_school`/`university`/`company`）を選手 category から自動付与、`season` が `spring`/`summer`/`fall` でない行はスキップする。
+
+### 既存playerとの重複回避・名寄せ（commit時）
+commit_promotion は INSERT 前に `find_existing_player`（氏名を `normalize_player_key` で正規化＝スペース除去し、`draft_year` 併用で照合）を実行する。既存playerが見つかった場合は **players/stats/achievements を新規作成せず**、その既存playerに `promote_player_candidate_links` でリンクするだけにする。これにより、手作業INSERT済みのplayerとの重複登録を防ぎ、氏名表記ゆれ（例「中山 優月」/「中山優月」）や所属表記ゆれの異なる candidate を同一playerへ名寄せできる。
 
 ---
 
@@ -237,29 +242,37 @@ def merge_structured_results(per_provider: List[Dict]) -> Dict[str, Any]:
 ### 5-4. `database/supabase_client.py` 追加
 ```python
 class SupabasePlayerPromotionStore:
-    def fetch_candidates(self, candidate_ids: List[str]) -> List[Dict]: ...
+    def fetch_candidate(self, candidate_id: str) -> Optional[Dict]: ...
+    def list_candidates(self, status='pending', limit=50) -> List[Dict]: ...  # 候補選択の補助
 
-    def fetch_related_articles(self, candidate_id: str) -> List[Dict]:
-        # description素材。player_candidate_sources→crawled_articles.body、
-        # および紐づく scout_comments / attention_signals の evidence を集約して返す
+    def find_existing_player(self, name: str, draft_year: Optional[int] = None) -> Optional[str]:
+        # 氏名を normalize_player_key で正規化（スペース除去）し draft_year 併用で players を照合。
+        # 既存があれば player_id を返す（手作業INSERT等との重複登録防止・氏名表記ゆれの名寄せ）
 
-    def save_research_result(self, candidate_id: str, merged: Dict) -> None:
-        # players ミラー列（profile）＋ research_stats/achievements/sources/raw を更新
-        # research_status='ready', researched_at=now()
+    def import_draft(self, payload: Dict) -> bool:
+        # promote_draft JSON を research_payload に保存し research_status='ready'
+        # status='promoted' / research_status='committed' の候補はスキップ（冪等）
 
     def commit_promotion(self, candidate_id: str) -> Optional[str]:
-        # 1) candidate のミラー列 → players へ INSERT（列名マッピング適用。rank は 0 固定）→ player_id 取得
-        # 2) research_stats → stats へ INSERT（player_id 付与、source は extracted_raw に保持）
-        # 3) research_achievements → player_achievements へ INSERT（player_id 付与）
-        # 4) RPC promote_player_candidate_links(candidate_id, player_id)
-        #    （関数が player_candidates.status='promoted' に更新＋scout_comments/attention_signals/scout_visits を伝播）
+        # 0) find_existing_player で既存player照合 → 見つかれば players/stats/achievements は作らず
+        #    その既存playerに promote_player_candidate_links でリンクし committed（名寄せ・重複回避）
+        # 1) players へ INSERT（positions→position 等のマッピング。category/throw/bat は日本語→コード変換。rank=0固定）
+        # 2) stats へ INSERT。season は spring/summer/fall 必須（それ以外の行はスキップ）。period は選手 category
+        #    から自動付与。投手/打撃は innings / at_bats 列で区別（別レコード）。指標(era/whip/obp/slg/ops)は
+        #    アプリが内訳から再計算するため、自責点・被安打・与四死球・打者三振などの内訳を入れる
+        # 3) player_achievements へ INSERT（type/year/tournament_name/result）
+        # 4) RPC promote_player_candidate_links(candidate_id, player_id)（status='promoted'＋scout_comments等を伝播）
         # 5) research_status='committed'
-        # 戻り値: player_id
+        # 既に player_id あり / promoted / committed の候補はスキップ（冪等）
 
 # top-level
-def research_player_candidates(candidate_ids: List[str], dummy_mode=False) -> Dict[str, int]: ...
+def list_promotion_candidates(status='pending', limit=50, dummy_mode=False) -> List[Dict]: ...
+def import_player_promotion_draft(payload: Dict, dummy_mode=False) -> bool: ...
 def commit_player_promotions(candidate_ids: List[str], dummy_mode=False) -> Dict[str, int]: ...
+def promote_player_from_draft(payload: Dict, dummy_mode=False) -> Optional[str]:  # import→commit 一気通貫
 ```
+
+> 注: `fetch_related_articles` / `save_research_result` / `--mode research`（4サイト自動リサーチ＋Gemini構造化）は将来の自動化（§10）用。現行はリサーチ・JSON作成を Claude Code が担当し、`import_draft`/`commit_promotion` だけで運用する。
 
 ### 5-5. `main_promote.py`（実装済み・CLI一気通貫運用）
 
