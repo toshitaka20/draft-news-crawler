@@ -2112,7 +2112,7 @@ class SupabasePlayerPromotionStore:
 
     # stats へ展開する際に拾う列（payload stats のキー = stats 列名）
     _STATS_FIELDS = [
-        'year', 'season', 'tournament', 'period', 'games',
+        'year', 'season', 'tournament', 'games',
         'innings', 'era', 'strikeouts', 'strikeouts_per_9', 'whip', 'hits_allowed',
         'batting_avg_against', 'earned_runs', 'walks',
         'at_bats', 'hits', 'home_runs', 'rbis', 'steals', 'avg', 'obp', 'slg', 'ops',
@@ -2272,8 +2272,9 @@ class SupabasePlayerPromotionStore:
             print(f"[Promotion] player_id 取得失敗: {candidate_id}")
             return None
 
-        # 2) stats へ INSERT
-        stats_rows = self._build_stats_rows(payload.get('stats') or [], player_id)
+        # 2) stats へ INSERT（period=選手の段階。投手/打撃は innings/at_bats 列で区別）
+        category_code = self._CATEGORY_MAP.get(player.get('category'), player.get('category'))
+        stats_rows = self._build_stats_rows(payload.get('stats') or [], player_id, category_code)
         if stats_rows:
             try:
                 self.supabase.table('stats').insert(stats_rows).execute()
@@ -2322,7 +2323,7 @@ class SupabasePlayerPromotionStore:
         row['rank'] = 0  # 運営が手動設定。リサーチ値は使わない
         return row
 
-    def _build_stats_rows(self, stats: List[Dict[str, Any]], player_id: str) -> List[Dict[str, Any]]:
+    def _build_stats_rows(self, stats: List[Dict[str, Any]], player_id: str, period: Optional[str] = None) -> List[Dict[str, Any]]:
         rows = []
         skipped = 0
         for s in stats:
@@ -2333,6 +2334,8 @@ class SupabasePlayerPromotionStore:
             if not row:
                 continue
             row['player_id'] = player_id
+            if period:
+                row['period'] = period  # 段階(high_school/university/company)。投手/打撃は innings/at_bats 列で区別
             rows.append(row)
         if skipped:
             print(f"[Promotion] season未指定/不正の stats を {skipped}件スキップ（season は spring/summer/fall 必須）")
