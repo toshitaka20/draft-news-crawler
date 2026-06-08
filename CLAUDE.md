@@ -43,7 +43,7 @@ JSONルール:
 - `achievements.type`: `title` / `national_tournament` / `samurai_japan` のいずれか。
 - `rank`: 運営が手動設定するため **0 固定**（リサーチで埋めない）。
 - `declared`: プロ志望表明または**進路の記載がなければ `true`**、進学・社会人入りなど**プロ以外の進路が判明していれば `false`**。
-- player フィールドは players テーブルに対応（`positions`→`position` / `throws`→`throw` / `bats`→`bat`）。値は**日本語で書いてOK**（commit時にコード変換する: category `大学`→`university` 等、throw/bat `右`→`R`/`左`→`L`/`両`→`S`、position は日本語のまま）。`career`（所属校歴 `["高校名","大学名"]`）や `bio`・`breaking_balls` など players の項目も忘れず埋める。
+- player フィールドは players テーブルに対応（`positions`→`position` / `throws`→`throw` / `bats`→`bat`）。値は**日本語で書いてOK**（commit時にコード変換する: category `大学`→`university` 等、throw/bat `右`→`R`/`左`→`L`/`両`→`S`、position は日本語のまま）。`career`（所属校歴 `["高校名","大学名"]`）や `bio`・`breaking_balls` など players の項目も忘れず埋める。`name_kana`（ふりがな）は DB側 **NOT NULL** なので必ず取得して入れる。
 - commit時、同名（スペース除去で正規化）＋draft_yearで既存playerを照合し、存在すれば**新規作成せず既存playerにリンク**する（手作業INSERT等との重複登録防止・氏名表記ゆれの名寄せ）。
 
 ## ドキュメント
