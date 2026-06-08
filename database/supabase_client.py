@@ -2109,6 +2109,7 @@ class SupabasePlayerPromotionStore:
         'breaking_balls': 'breaking_balls',
         'long_throw_m': 'long_throw_m',
         'fifty_m_time': 'fifty_m_time',
+        'career': 'career',       # 所属校歴 ["高校名", "大学名"] など（_text）
         'prefecture': 'prefecture',
         'draft_year': 'draft_year',
         'declared': 'declared',

@@ -142,7 +142,7 @@ JSON項目ルール（`CLAUDE.md` と同期）:
 | `positions` | `position` (`_text`) |
 | `throws` | `throw` |
 | `bats` | `bat` |
-| `name`/`name_kana`/`team`/`category`/`draft_year`/`height_cm`/`weight_kg`/`fastball_max`/`breaking_balls`/`long_throw_m`/`fifty_m_time`/`prefecture`/`bio`/`description`/`declared` | 同名 |
+| `name`/`name_kana`/`team`/`category`/`draft_year`/`height_cm`/`weight_kg`/`fastball_max`/`breaking_balls`/`long_throw_m`/`fifty_m_time`/`career`/`prefecture`/`bio`/`description`/`declared` | 同名 |
 | `rank` | commit時に **0 固定**（payload値は無視） |
 
 値の変換（commit時に `SupabasePlayerPromotionStore` が吸収。JSONは人が読みやすい日本語で書いてよい）:
