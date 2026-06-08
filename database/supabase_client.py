@@ -999,7 +999,7 @@ class SupabaseAttentionSignalStore:
                 continue
             seen_keys.add(key)
 
-            teams = [team.strip() for team in str(row[7] or '').split(',') if team.strip()]
+            team_keys = [team_key.strip() for team_key in str(row[7] or '').split(',') if team_key.strip()]
             player_link = player_link_map.get(source_url, {})
             records.append({
                 'crawled_article_id': crawled_id_map.get(source_url),
@@ -1013,7 +1013,7 @@ class SupabaseAttentionSignalStore:
                 'category': str(row[2] or '').strip() or None,
                 'team_count': self._to_int(row[5]),
                 'person_count': self._to_int(row[6]),
-                'teams': teams,
+                'team_keys': team_keys,
                 'has_npb': self._to_bool(row[8]),
                 'has_mlb': self._to_bool(row[9]),
                 'score': self._to_int(row[10]),
@@ -1031,6 +1031,127 @@ class SupabaseAttentionSignalStore:
         except Exception as e:
             print(f"[DB] attention_signals 保存エラー: {e}")
             return {'total': len(rows), 'inserted': 0, 'duplicates': duplicates, 'errors': len(records)}
+
+
+class SupabaseScoutVisitStore:
+    """scout_visits への視察情報保存(球団 x 選手単位で正規化)。"""
+
+    def __init__(self, dummy_mode: bool = False):
+        self.dummy_mode, self.supabase = _init_supabase_client(dummy_mode=dummy_mode)
+        if not self.dummy_mode:
+            print("✅ Supabaseクライアントを初期化しました(scout_visits)")
+
+    @staticmethod
+    def _to_int(value: Any) -> Optional[int]:
+        try:
+            if value is None or value == '':
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _to_optional_str(value: Any) -> Optional[str]:
+        text = str(value or '').strip()
+        return text or None
+
+    @staticmethod
+    def _format_published_at(date_value: Any) -> Optional[str]:
+        return SupabaseCrawledArticleStore._format_published_at(str(date_value or ''))
+
+    def _get_existing_keys(self, source_urls: List[str]) -> Set[Tuple[str, str, str, str]]:
+        if self.dummy_mode or self.supabase is None or not source_urls:
+            return set()
+
+        try:
+            response = (
+                self.supabase
+                .table('scout_visits')
+                .select('source_url,evidence_hash,team_key,player_name')
+                .in_('source_url', sorted(set(source_urls)))
+                .execute()
+            )
+            return {
+                (
+                    row.get('source_url') or '',
+                    row.get('evidence_hash') or '',
+                    row.get('team_key') or '',
+                    row.get('player_name') or '',
+                )
+                for row in (response.data or [])
+            }
+        except Exception as e:
+            print(f"[DB] scout_visits 既存取得エラー: {e}")
+            return set()
+
+    def insert_scout_visits(self, articles: List[Dict[str, Any]]) -> Dict[str, int]:
+        rows = []
+        for article in articles:
+            rows.extend(article.get('scout_visit_rows', []))
+
+        if not rows:
+            return {'total': 0, 'inserted': 0, 'duplicates': 0, 'errors': 0}
+
+        if self.dummy_mode or self.supabase is None:
+            print(f"[DB] scout_visits 保存スキップ(ダミーモード): {len(rows)}件")
+            return {'total': len(rows), 'inserted': 0, 'duplicates': 0, 'errors': 0}
+
+        source_urls = [row.get('source_url') for row in rows if row.get('source_url')]
+        crawled_id_map = SupabaseCrawledArticleStore(dummy_mode=False).get_article_id_map_by_urls(source_urls)
+        existing_keys = self._get_existing_keys(source_urls)
+        attention_store = SupabaseAttentionSignalStore(dummy_mode=False)
+        player_link_map = attention_store._get_player_links_by_source_urls(source_urls)
+
+        records = []
+        seen_keys: Set[Tuple[str, str, str, str]] = set()
+        duplicates = 0
+
+        for row in rows:
+            source_url = self._to_optional_str(row.get('source_url'))
+            evidence = self._to_optional_str(row.get('evidence'))
+            if not source_url or not evidence:
+                continue
+
+            team_key = self._to_optional_str(row.get('team_key'))
+            player_name = self._to_optional_str(row.get('player_name'))
+            evidence_hash = hashlib.md5(evidence.encode('utf-8')).hexdigest()
+            key = (source_url, evidence_hash, team_key or '', player_name or '')
+            if key in seen_keys or key in existing_keys:
+                duplicates += 1
+                continue
+            seen_keys.add(key)
+
+            player_link = player_link_map.get(source_url, {})
+            records.append({
+                'crawled_article_id': crawled_id_map.get(source_url),
+                'player_id': player_link.get('player_id'),
+                'player_candidate_id': player_link.get('player_candidate_id'),
+                'player_name': player_link.get('player_name') or player_name,
+                'team_key': team_key,
+                'person_count': self._to_int(row.get('person_count')),
+                'event_date': self._to_optional_str(row.get('event_date')),
+                'event_date_text': self._to_optional_str(row.get('event_date_text')),
+                'event_date_precision': self._to_optional_str(row.get('event_date_precision')),
+                'source_url': source_url,
+                'source_title': self._to_optional_str(row.get('source_title')),
+                'published_at': self._format_published_at(row.get('published_at')),
+                'source': self._to_optional_str(row.get('source')),
+                'category': self._to_optional_str(row.get('article_category')),
+                'evidence': evidence,
+            })
+
+        if not records:
+            return {'total': len(rows), 'inserted': 0, 'duplicates': duplicates, 'errors': 0}
+
+        try:
+            response = self.supabase.table('scout_visits').insert(records).execute()
+            inserted = len(response.data or records)
+            print(f"[DB] scout_visits 保存完了: {inserted}件")
+            return {'total': len(rows), 'inserted': inserted, 'duplicates': duplicates, 'errors': 0}
+        except Exception as e:
+            print(f"[DB] scout_visits 保存エラー: {e}")
+            return {'total': len(rows), 'inserted': 0, 'duplicates': duplicates, 'errors': len(records)}
+
 
 class SupabaseScoutCommentInserter:
     """Supabaseにスカウトコメントを直接INSERTする機能"""
@@ -1378,6 +1499,11 @@ def insert_attention_signals(articles: List[Dict[str, Any]], dummy_mode: bool = 
     """注目度シグナルを attention_signals にINSERT"""
     store = SupabaseAttentionSignalStore(dummy_mode=dummy_mode)
     return store.insert_attention_signals(articles)
+
+def insert_scout_visits(articles: List[Dict[str, Any]], dummy_mode: bool = False) -> Dict[str, int]:
+    """視察情報を scout_visits にINSERT"""
+    store = SupabaseScoutVisitStore(dummy_mode=dummy_mode)
+    return store.insert_scout_visits(articles)
 
 def get_existing_crawled_urls_by_source(source: str, dummy_mode: bool = False) -> Set[str]:
     """crawled_articles から指定ソースの既存URLを取得"""

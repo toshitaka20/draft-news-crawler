@@ -5,13 +5,14 @@ Yahoo!スポーツナビ専用記事収集・AIコメント抽出システム
 
 from typing import List, Dict, Any
 from scraper.yahoo_sponavi import YahooSponaviScraper
-from ai.gemini import process_articles_with_ai, process_player_candidates_with_ai
+from ai.gemini import process_articles_with_ai, process_player_candidates_with_ai, process_scout_visits_with_ai
 from sheets.google_sheets import update_sheets, get_existing_urls_by_source
 from database.supabase_client import (
     get_existing_crawled_urls_by_source,
     insert_attention_signals,
     insert_player_candidates,
     insert_scout_comments_directly,
+    insert_scout_visits,
     upsert_crawled_articles,
 )
 from utils import filter_yahoo_against_existing, smart_deduplicate_articles, annotate_article_signals
@@ -120,6 +121,12 @@ def main():
         player_candidate_count = sum(len(a.get('player_candidate_rows', [])) for a in all_processed)
         print(f"選手候補抽出数: {player_candidate_count}件")
 
+        # 6.5. 視察情報抽出（球団x選手の視察記録）
+        print("\n4.5. 視察情報抽出中...")
+        all_processed = process_scout_visits_with_ai(all_processed)
+        scout_visit_count = sum(len(a.get('scout_visit_rows', [])) for a in all_processed)
+        print(f"視察情報抽出数: {scout_visit_count}件")
+
         # 7. 生記事をDBへ保存（URL重複判定の正本）
         print("\n5. 生記事データベース保存中...")
         crawled_results = upsert_crawled_articles(all_processed)
@@ -145,6 +152,14 @@ def main():
         print(f"  保存件数: {attention_results['inserted']}件")
         print(f"  重複除外: {attention_results['duplicates']}件")
         print(f"  エラー件数: {attention_results['errors']}件")
+
+        # 9.5. 視察情報をDBへ保存
+        print("\n7.5. 視察情報データベース保存中...")
+        scout_visit_results = insert_scout_visits(all_processed)
+        print(f"  対象件数: {scout_visit_results['total']}件")
+        print(f"  保存件数: {scout_visit_results['inserted']}件")
+        print(f"  重複除外: {scout_visit_results['duplicates']}件")
+        print(f"  エラー件数: {scout_visit_results['errors']}件")
 
         # 10. スカウトコメントをデータベースに直接INSERT
         print("\n8. スカウトコメントデータベース挿入中...")

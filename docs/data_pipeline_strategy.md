@@ -234,7 +234,7 @@ create table public.attention_signals (
   category text null,
   team_count integer not null default 0,
   person_count integer not null default 0,
-  teams text[] not null default array[]::text[],
+  team_keys text[] not null default array[]::text[],
   has_npb boolean not null default false,
   has_mlb boolean not null default false,
   score integer not null default 0,
@@ -272,6 +272,62 @@ alter table public.scout_comments
 select public.promote_player_candidate_links(:player_candidate_id, :player_id);
 ```
 
+### 4.6. `scout_visits`（視察情報）
+
+「どの球団が」「どの選手を」「何人で」「いつ」視察したかという情報を、球団ページ・選手ページの双方から一覧表示できるよう、**球団 × 選手単位で正規化**して保存する専用テーブル。
+
+設計判断:
+
+- `attention_signals`（記事・文単位の注目度シグナルの集計値）とは粒度が異なるため、流用せず別テーブルとして新設した。
+- 日付は自由文ではなく `date` 型で持ち、推定の確からしさを示す `event_date_precision`（`exact` / `approximate` / `unknown`）を併設する。記事中の表現は `event_date_text` にそのまま残す。
+- 球団は日本語表記ではなく、サイトの既存命名規則に合わせて `team_key`（`giants` / `hawks` など）で持つ。
+
+```sql
+create table public.scout_visits (
+  id uuid primary key default gen_random_uuid(),
+  crawled_article_id uuid null references public.crawled_articles(id) on delete set null,
+  player_id uuid null references public.players(id) on delete set null,
+  player_candidate_id uuid null references public.player_candidates(id) on delete set null,
+  player_name text null,
+  team_key text null,
+  person_count integer null,
+  event_date date null,
+  event_date_text text null,
+  event_date_precision text null, -- 'exact' | 'approximate' | 'unknown'
+  source_url text not null,
+  source_title text null,
+  published_at timestamp with time zone null,
+  source text null,
+  category text null,
+  evidence text not null,
+  evidence_hash text generated always as (md5(evidence)) stored,
+  created_at timestamp with time zone not null default now(),
+  updated_at timestamp with time zone not null default now()
+);
+```
+
+球団名 → `team_key` の変換:
+
+- `utils.py` に `TEAM_NAME_TO_KEY`（球団名表記ゆれ→`team_key`の対応表）と `normalize_team_key()` を用意し、記事中の表記（"巨人" "読売ジャイアンツ" "福岡ソフトバンクホークス" など正式名称・略称・表記ゆれを含む）を正規化する。
+- 対応表に完全一致しない表記は、長い表記を優先した部分一致で救済する。
+
+「○球団のスカウトが視察」のような集合的な記述の扱い:
+
+- 記事には「ＮＰＢ全12球団のスカウトが視察」のように、個別球団名までは特定できない集合的な表現が頻出する。これをそのまま `team_key = null` で保存すると、球団ページに表示できない情報になってしまう。
+- 一方で、球団数を確定情報として全球団に展開してしまうと、記事に書かれていない球団（例:「ロッテも視察していた」）を捏造してDBに入れることになり危険。
+- そこで「視察に来た球団数が NPB の総球団数（12）と一致する」場合に限り、**全12球団を確定情報として展開**する（"全12球団" ＝ "全球団" と等価であるため捏造にならない）。それ以外の数（例:「10球団」）は内訳が不明なため、`team_key = null` の集合的なレコード（規模情報）として保持し、個別球団展開は行わない。
+- 同じ文中に集合的な記述と個別球団名（例:「巨人の○○、日本ハムの○○も視察」）が共存する場合は、個別に名前が挙がっている球団は確定レコードとして優先し、全球団展開時に重複しないよう除外する。
+- AIには「視察球団数がNPB全体と一致するか（`is_all_npb_teams`）」の判定だけを行わせ、実際の12球団分の展開はコード側で確定リスト（`utils.ALL_NPB_TEAM_KEYS`）を使って行う。AIに毎回12球団を正確に列挙させるとハルシネーションのリスクがあるため。
+
+選手紐付け:
+
+- `attention_signals` / `scout_comments` と同じパターンで、`player_article_sources`（確定選手）→ `player_candidate_sources`（候補選手）の順に既存リンクを参照し、`player_id` または `player_candidate_id` を埋める。
+- 紐付けの解決自体は行わない（名前の再マッチングはしない）。記事URL単位の紐付けは `process_player_candidates_with_ai` → `insert_player_candidates` が事前に作成済みである前提に乗る。これにより、名寄せロジックを各テーブルで重複実装せずに済む。
+
+重複排除:
+
+- `evidence` のハッシュ（`evidence_hash`）と `source_url` / `team_key` / `player_name` の組で一意性を担保する。
+
 ### 5. `draft_watch_article_candidates`
 
 Draft-Watchで記事化したい候補を保存する。
@@ -287,6 +343,7 @@ Draft-Watchで記事化したい候補を保存する。
 ```sql
 create table public.draft_watch_article_candidates (
   id uuid primary key default gen_random_uuid(),
+  topic_key text null,
   topic_type text not null,
   main_player_id uuid null,
   main_player_name text null,
@@ -296,15 +353,20 @@ create table public.draft_watch_article_candidates (
   summary_json jsonb null,
   draft_article_markdown text null,
   status text not null default 'draft',
+  merged_into_id uuid null references public.draft_watch_article_candidates(id),
   created_at timestamp with time zone not null default now(),
   updated_at timestamp with time zone not null default now(),
   constraint draft_watch_article_candidates_status_check check (
-    status = any (array['draft', 'reviewed', 'published', 'rejected'])
+    status = any (array['draft', 'reviewed', 'published', 'rejected', 'merged'])
   ),
   constraint draft_watch_article_candidates_topic_type_check check (
     topic_type = any (array['player_watch', 'scout_meeting', 'game_report', 'ranking', 'other'])
   )
 );
+
+create unique index idx_draft_watch_article_candidates_topic_key
+  on public.draft_watch_article_candidates (topic_key)
+  where topic_key is not null and status <> 'merged';
 ```
 
 公開時の流れ:
@@ -313,6 +375,9 @@ create table public.draft_watch_article_candidates (
 2. 人間が確認する。
 3. 公開する場合、既存の `public.articles` にINSERTする。
 4. `draft_watch_article_candidates.status = published` に更新する。
+
+`status = merged` は、後から「実は同じトピックだった」と判明した候補を、正本側の候補へ吸収したことを表す。
+`merged_into_id` に正本候補の `id` を入れ、出典は正本側の `draft_watch_article_candidate_sources` へ付け替える。
 
 ### 6. `draft_watch_article_candidate_sources`
 
@@ -325,6 +390,34 @@ Draft-Watch記事候補と元記事の多対多を保存する。
 - 複数の外部記事から1つのDraft-Watch記事候補を作る。
 - どの記事が主要ソースで、どの記事が補助情報かを区別する。
 - 下書き生成時の引用元・参照元を追跡する。
+
+推奨カラム:
+
+```sql
+create table public.draft_watch_article_candidate_sources (
+  id uuid primary key default gen_random_uuid(),
+  candidate_id uuid not null references public.draft_watch_article_candidates(id) on delete cascade,
+  crawled_article_id uuid null references public.crawled_articles(id),
+  source_url text not null,
+  source_title text null,
+  source text null,
+  published_at timestamp with time zone null,
+  role text not null default 'source',
+  created_at timestamp with time zone not null default now(),
+  constraint draft_watch_article_candidate_sources_role_check check (
+    role = any (array['primary', 'source', 'supporting'])
+  ),
+  constraint draft_watch_article_candidate_sources_unique unique (candidate_id, source_url)
+);
+```
+
+役割:
+
+- `primary`: トピックの起点になった記事。最初にこのトピックを作った記事。
+- `source`: 同じトピックを補強する通常の記事（同内容を別媒体が報じた記事など）。
+- `supporting`: 主要な出来事ではないが、背景・後日談として参照する記事。
+
+候補が1件追加されるたびに `primary` を入れ替える必要はない。`primary` は最初の1件のまま固定し、以後の同テーマ記事は `source` として積み上げる。
 
 ## 選手抽出の方針
 
@@ -376,18 +469,211 @@ scout_comments に保存
 
 `player_candidates` は `players` の下書きそのものではなく、未承認の選手候補マスタとして扱う。
 
-承認時の基本フロー:
+承認は、記事内の抽出情報だけで自動登録するのではなく、管理者が選択した候補だけを対象にした **リサーチ付き一括昇格フロー** とする。
+
+理由:
+
+- 記事本文だけでは、身長・体重・投打・詳細経歴・大会成績・実績が不足することが多い。
+- `players` / `stats` / `player_achievements` は公開データの正本になるため、根拠が薄い自動INSERTは避ける。
+- 管理者が選択した候補だけを処理すれば、AI費用と誤登録リスクを抑えられる。
+
+推奨フロー:
 
 ```text
-player_candidates.status = pending
+管理画面で player_candidates を複数選択
   ↓
-人間が候補内容を確認・補正
+自前コードで外部検索
   ↓
-players に正式登録
+検索結果・本文・既存の候補根拠を収集
+  ↓
+候補名周辺の本文抜粋を作成
+  ↓
+Gemini で players / stats / player_achievements 用JSONに構造化
+  ↓
+管理画面で登録案を確認・修正
+  ↓
+一括登録
+  ↓
+players / stats / player_achievements にINSERT
   ↓
 player_candidates.player_id に players.id を保存
   ↓
 player_candidates.status = promoted に更新
+  ↓
+scout_comments / attention_signals / scout_visits の player_id を更新
+```
+
+`public.promote_player_candidate_links(p_player_candidate_id, p_player_id)` は、上記フローの最後（一括登録APIの内部）で呼び出すための関数として用意してある。`player_candidates` を `promoted` に更新し、同じ `player_candidate_id` で紐づく `scout_comments` / `attention_signals` / `scout_visits` の `player_id` を一括反映する。
+
+呼び出しの主体・タイミング:
+
+- **管理者が管理画面で「この候補は実在の選手Xと同一」と判断し、選手データを揃えて本登録を実行した瞬間** に、一括登録APIの内部から呼ばれる想定。AIや定期処理が自動で呼ぶことはない（`players` は公開データの正本のため、誤登録のリスクを避ける）。
+- 2026年6月時点では、この関数を呼び出す「外部検索 → AI整形 → 確認画面 → 一括登録API」（Phase 6）が未実装のため、実際に呼び出している箇所はまだ存在しない。関数だけ先に用意してある状態。
+- 未実装の間も困らない: `scout_comments` / `attention_signals` / `scout_visits` は `player_candidate_id` で候補に紐付いた状態のまま蓄積・表示できるため、昇格フローの実装を急ぐ必要はない。
+
+初期実装では、AI補完結果を保存する中間テーブルは必須にしない。
+管理画面に返したJSONを人間が確認・修正し、その内容をそのまま一括登録APIへ送る。
+
+ただし、途中保存・監査・再編集が必要になった場合は、後から `player_candidate_approval_drafts` のような中間テーブルを追加してもよい。
+
+### リサーチ方法
+
+AIに検索を任せるのではなく、検索・本文取得は自前コードで行う。
+AIには、収集済みの検索結果・本文抜粋・出典URLを渡して構造化だけを任せる。
+
+理由:
+
+- 検索対象と取得本文を制御できる。
+- 出典URLを保存できる。
+- Google Search grounding の追加課金とブラックボックス性を抑えられる。
+- 同じ検索結果を再利用できる。
+
+検索対象の優先順位:
+
+1. 所属チーム公式
+2. 大会公式、連盟公式
+3. 高野連、大学野球連盟、JABA、侍ジャパン
+4. ドラフト系メディア
+5. スポーツ紙、Yahooニュース
+6. SNS・ブログは原則参考扱い
+
+1選手あたりの取得量は、初期実装では検索上位5〜8件程度に抑える。
+本文全文をAIに渡すのではなく、候補名周辺・成績表・実績箇所だけを抽出して渡す。
+
+### AIモデルの使い分け
+
+通常の構造化抽出は `gemini-2.5-flash-lite` を使う。
+`description` や `bio` を厚めに生成したい場合だけ `gemini-2.5-flash` を使う。
+重要候補・曖昧な候補だけ、手動確認または上位モデルで再生成する。
+
+用途:
+
+- `gemini-2.5-flash-lite`
+  - 身長、体重、投打、ポジション、最速、出身、経歴、実績、成績の抽出
+  - JSON構造化
+- `gemini-2.5-flash`
+  - `description`
+  - `bio`
+  - `career` の自然文整理
+- 上位モデル
+  - 情報が多い重要選手
+  - 出典間で情報が矛盾する選手
+  - 人間確認で再生成したい選手
+
+費用を抑えるルール:
+
+- 全candidateに自動実行しない。
+- 管理者が選択した候補だけ実行する。
+- 構造化はFlash-Liteを基本にする。
+- description生成だけFlashへ分ける。
+- 生成結果は管理画面で保持し、再生成は手動ボタンにする。
+
+### AI出力JSON
+
+AIはDBへ直接書き込まない。
+本テーブル投入用の登録案JSONだけを返す。
+
+推奨レスポンス:
+
+```json
+{
+  "items": [
+    {
+      "candidate_id": "uuid",
+      "player": {
+        "name": "",
+        "name_kana": "",
+        "position": ["投手"],
+        "height_cm": null,
+        "weight_kg": null,
+        "team": "",
+        "category": "",
+        "fastball_max": null,
+        "breaking_balls": [],
+        "long_throw_m": null,
+        "fifty_m_time": null,
+        "bio": "",
+        "career": [],
+        "throw": null,
+        "bat": null,
+        "prefecture": null,
+        "rank": null,
+        "youtube_urls": [],
+        "draft_year": 2026,
+        "declared": false,
+        "description": ""
+      },
+      "stats": [],
+      "achievements": [],
+      "sources": [],
+      "warnings": []
+    }
+  ]
+}
+```
+
+`stats` と `achievements` は、根拠URLがあるものだけ登録案に含める。
+不明な項目は推測で埋めず、`null` または `warnings` に回す。
+
+### API設計
+
+管理画面からは2段階APIにする。
+
+```text
+POST /admin/player-candidates/research
+```
+
+役割:
+
+- 選択された `candidate_ids` を受け取る。
+- 候補情報、候補根拠、既存スカウトコメント、注目シグナルを取得する。
+- 外部検索・本文取得を行う。
+- AIで登録案JSONを作る。
+- DBには書き込まず、管理画面へ返す。
+
+```json
+{
+  "candidate_ids": ["uuid", "uuid"]
+}
+```
+
+```text
+POST /admin/player-candidates/promote
+```
+
+役割:
+
+- 管理画面で確認・修正済みのJSONを受け取る。
+- `players` にINSERTする。
+- `stats` にINSERTする。
+- `player_achievements` にINSERTする。
+- `player_candidates` を `promoted` に更新する。
+- `scout_comments` / `attention_signals` を `player_id` へ紐付ける。
+
+### 登録時のDB反映
+
+昇格時は1選手ずつトランザクション相当で処理する。
+
+```text
+players INSERT
+  ↓
+stats INSERT
+  ↓
+player_achievements INSERT
+  ↓
+player_candidates.player_id 更新
+  ↓
+player_candidates.status = promoted
+  ↓
+scout_comments.player_id 更新
+  ↓
+attention_signals.player_id 更新
+```
+
+既に用意している紐付け関数を使う。
+
+```sql
+select public.promote_player_candidate_links(:player_candidate_id, :player_id);
 ```
 
 承認時に `player_candidates.player_id` を埋めることで、候補時代に `player_candidate_sources` に蓄積された記事根拠は、正式な `players` と間接的に紐付く。
@@ -597,6 +883,129 @@ create table public.player_article_sources (
 
 Draft-Watch記事化は、外部ニュースをそのままコピーするのではなく、複数情報を整理した独自下書きとして生成する。
 
+似たような記事は同じ媒体・別媒体を問わず短期間に何本も流れてくるため、**「記事1本=下書き1本」ではなく「トピック1つ=下書き1本」** とする。
+新しい記事が来るたびに新規下書きを作るのではなく、まず既存トピックに合流できないかを判定し、合流できなければ新規トピックを作る。
+
+```text
+crawled_articles（新着記事）
+  ↓
+シグナル抽出（player_candidates / attention_signals / scout_comments）
+  ↓
+トピック判定（topic_key生成 + 既存候補とのマッチング）
+  ↓ 一致           ↓ 不一致
+既存candidateに    新規candidateを
+sourceを追加       作成
+  ↓                ↓
+importance_score / summary_json を更新
+  ↓
+閾値を超えたものだけAIで draft_article_markdown を生成・再生成
+  ↓
+人間レビュー
+  ↓
+public.articles へ公開
+```
+
+### トピックの単位と `topic_key`
+
+`topic_key` は同じ話題をまとめるための決定的なキーで、`topic_type` ごとに次の形式で生成する。
+
+```text
+player_watch:{draft_year}:{player_key}:{event_date}
+scout_meeting:{team}:{meeting_date}:{draft_year}
+game_report:{game_date}:{team_a}:{team_b}
+ranking:{draft_year}:{category}:{theme}
+other:{normalized_title_hash}
+```
+
+- `player_key` は `main_player_id`（`players` / `player_candidates` に解決済みなら）を優先し、未解決なら正規化した選手名（全角半角・スペース・敬称を除去した小文字キー）を使う。
+- `event_date` / `meeting_date` / `game_date` は記事本文から抽出した「出来事の日付」を使う。`published_at` ではなく出来事の日付でまとめることで、同じ出来事を後日報じた記事も同じキーになる。
+- `team_a` / `team_b` はチーム名を辞書順に正規化して並べ、表記順の違いで別トピックにならないようにする。
+- どの型にも当てはまらない場合は `topic_type = other` とし、正規化タイトルのハッシュをキーにする。
+
+`topic_key` はDB側で一意にするが（`status <> 'merged'` の範囲でユニーク）、日付のずれや表記揺れで完全一致しないケースは次の「マッチング判定」で吸収する。
+
+### 既存トピックとのマッチング判定
+
+新着記事ごとに、まず `topic_key` の完全一致を調べる。一致すればそのまま合流する。
+
+完全一致しない場合は、直近の候補（目安: 同じ `topic_type` かつ `event_date` の前後3日以内、または `main_player_id` / `main_player_name` が一致するもの）に対してルールベースで再判定する。
+
+最初はAIに丸投げせず、ルールベースで十分とする。
+
+合流（同一トピック）と判定する条件:
+
+- 主役の選手名が一致する
+- 出来事の日付が同じ、または近い（数日以内）
+- 大会名・試合名・スカウト会議名などの固有表現が一致する
+- 「12球団」「8球団」「スカウト会議」「上位候補」など同種の注目シグナルを含む
+- タイトルや見出しの類似度が高い
+- `source_url` は異なるが本文の要旨が実質同じ
+
+別トピックと判定する条件:
+
+- 同じ選手でも出来事の日付が異なる試合・イベントである
+- 同じ選手でも「視察」と「進路表明」のように出来事の種類が異なる
+- 同じ球団でも開催日が異なるスカウト会議である
+- 速報とその後のインタビュー・総括記事（同じ出来事の補足であれば `supporting` として同じトピックに含めてよいが、新たな出来事を主として扱う場合は別トピックにする）
+
+判定結果の扱い:
+
+- 合流: 既存 `draft_watch_article_candidates` に対して `draft_watch_article_candidate_sources` を追加し、`importance_score` と `summary_json` を更新する。
+- 新規: `topic_key` を採番して `draft_watch_article_candidates` を新規作成し、その記事を `primary` として `draft_watch_article_candidate_sources` に登録する。
+- 取りこぼし救済: 後からAIレビューや人間確認で「実は同じトピックだった」と分かった場合は、後発側を `status = merged` にし、`merged_into_id` で正本側へ向け、出典行を正本側へ付け替える。
+
+将来的に類似度判定の精度を上げたくなった場合は、タイトル・要旨のembeddingベースの類似検索を追加してもよいが、初期実装ではキー一致＋ルールベースで進める。
+
+### `summary_json`（AIへ渡す前の構造化データ）
+
+本文をそのままAIに渡すのではなく、複数記事の情報を一度構造化してから下書き生成AIに渡す。
+こうすることで、同じトピックに記事が増えるたびに「材料を整理 → 下書きを生成（または再生成）」を繰り返せる。
+
+```json
+{
+  "topic_type": "player_watch",
+  "topic_key": "player_watch:2026:arima_kaku:2026-06-08",
+  "main_player": {
+    "name": "有馬伽久",
+    "team": "立命大",
+    "positions": ["投手"]
+  },
+  "attention": {
+    "team_count": 12,
+    "person_count": 24,
+    "teams": ["fighters"],
+    "has_mlb": false
+  },
+  "scout_comments": [],
+  "related_players": [],
+  "events": [
+    { "date": "2026-06-08", "summary": "NPB12球団24人が視察" }
+  ],
+  "sources": [
+    { "url": "", "title": "", "source": "スポーツ報知", "role": "primary" }
+  ],
+  "warnings": []
+}
+```
+
+`summary_json` はソースが追加されるたびに作り直す。`events` は時系列で積み上げ、`sources` は `draft_watch_article_candidate_sources` の内容をそのまま反映する。
+
+### 下書き記事の構成
+
+Draft-Watch記事は外部記事の言い換えではなく、複数ソースを整理した独自記事にする。構成は固定テンプレートにする。
+
+```text
+タイトル
+リード文（何が起きたかの要約）
+本記（何が起きたか / 注目された選手 / スカウト・球団の動き）
+ドラフト評価上のポイント
+今後の見どころ
+出典一覧（sourcesから自動生成）
+```
+
+`importance_score` が閾値を超えたものだけをAI生成対象にする。閾値未満の候補は `summary_json` の更新のみ行い、後から重要度が上がった時点で初めて `draft_article_markdown` を生成する。
+すでに `draft_article_markdown` がある候補に新しい出典が増えた場合は、`summary_json` を更新したうえで再生成する（差分追記ではなく作り直す）。
+
 記事化候補条件:
 
 - 12球団視察
@@ -629,7 +1038,7 @@ Draft-Watch記事化は、外部ニュースをそのままコピーするので
   "attention": {
     "team_count": 12,
     "person_count": 24,
-    "teams": ["日本ハム"],
+    "teams": ["fighters"],
     "notable_notes": ["日本ハムは最多4人態勢", "栗山英樹CBOが視察"]
   },
   "scout_comments": [
@@ -690,9 +1099,10 @@ Sheetsは正本ではなく、レビュー用ビューにする。
 
 ### Phase 4: Draft-Watch記事候補を作る
 
-- `draft_watch_article_candidates` を作成する。
-- `draft_watch_article_candidate_sources` を作成する。
-- 注目度スコア、スカウト会議検出、同一選手クラスタリングから下書きを生成する。
+- `draft_watch_article_candidates`（`topic_key` / `merged_into_id` 含む）を作成する。
+- `draft_watch_article_candidate_sources`（`role` 含む）を作成する。
+- 新着記事ごとに `topic_key` を生成し、既存候補とのマッチング判定（完全一致 → ルールベース近傍判定）でトピックへ合流させるか新規作成するかを決める。
+- 注目度スコア、スカウト会議検出から `summary_json` を作り、閾値を超えた候補だけ `draft_article_markdown` をAI生成する。
 - 公開は手動確認にする。
 
 ### Phase 5: 選手タイムラインを作る
@@ -702,7 +1112,16 @@ Sheetsは正本ではなく、レビュー用ビューにする。
 - 承認済み選手は `player_id` でタイムラインを確認する。
 - Draft-Watch公開記事は `articles` + `article_players` をUNIONして追加する。
 
-### Phase 6: Sheetsをレビュー用だけに縮小する
+### Phase 6: 選択候補のリサーチ付き昇格を作る
+
+- 管理画面で複数の `player_candidates` を選択できるようにする。
+- 選択候補だけ外部検索・本文取得を行う。
+- `gemini-2.5-flash-lite` で `players` / `stats` / `player_achievements` 用JSONを作る。
+- `description` / `bio` の文章生成だけ必要に応じて `gemini-2.5-flash` を使う。
+- 管理画面で確認・修正してから一括昇格する。
+- 一括登録APIの最後に `public.promote_player_candidate_links(:player_candidate_id, :player_id)` を呼び、`scout_comments` / `attention_signals` / `scout_visits` の `player_id` を更新する（関数自体は実装済み・呼び出し元のみ未実装）。
+
+### Phase 7: Sheetsをレビュー用だけに縮小する
 
 - 全記事出力をやめる。
 - 確認が必要な候補だけSheetsに出す。

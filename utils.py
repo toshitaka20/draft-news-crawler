@@ -56,6 +56,67 @@ JAPANESE_TEAM_NAMES = [
     '巨人', '阪神', '中日', '広島', 'DeNA', '横浜DeNA', 'ヤクルト',
     '西武', '日本ハム', 'ロッテ', 'ソフトバンク', 'オリックス', '楽天'
 ]
+
+TEAM_NAME_TO_KEY = {
+    '巨人': 'giants',
+    '読売': 'giants',
+    '読売ジャイアンツ': 'giants',
+    '読売巨人軍': 'giants',
+    '阪神': 'tigers',
+    '阪神タイガース': 'tigers',
+    '中日': 'dragons',
+    '中日ドラゴンズ': 'dragons',
+    '広島': 'carp',
+    '広島東洋カープ': 'carp',
+    'DeNA': 'baystars',
+    '横浜DeNA': 'baystars',
+    '横浜ＤｅＮＡ': 'baystars',
+    '横浜DeNAベイスターズ': 'baystars',
+    '横浜ＤｅＮＡベイスターズ': 'baystars',
+    'ヤクルト': 'swallows',
+    '東京ヤクルトスワローズ': 'swallows',
+    '西武': 'lions',
+    '埼玉西武ライオンズ': 'lions',
+    '日本ハム': 'fighters',
+    '日ハム': 'fighters',
+    '北海道日本ハムファイターズ': 'fighters',
+    'ロッテ': 'marines',
+    '千葉ロッテマリーンズ': 'marines',
+    'ソフトバンク': 'hawks',
+    'ソフトB': 'hawks',
+    '福岡ソフトバンク': 'hawks',
+    '福岡ソフトバンクホークス': 'hawks',
+    'オリックス': 'buffaloes',
+    'オリックス・バファローズ': 'buffaloes',
+    'オリックスバファローズ': 'buffaloes',
+    '楽天': 'eagles',
+    '東北楽天': 'eagles',
+    '東北楽天ゴールデンイーグルス': 'eagles',
+}
+
+# NPB12球団のteam_key一覧（「全12球団が視察」のような記述を全球団確定情報として展開する際に使用）
+ALL_NPB_TEAM_KEYS = [
+    'giants', 'tigers', 'dragons', 'carp', 'baystars', 'swallows',
+    'lions', 'fighters', 'marines', 'hawks', 'buffaloes', 'eagles',
+]
+
+
+def normalize_team_key(team_name: Optional[str]) -> Optional[str]:
+    """
+    記事中の球団表記をDraft-Watchサイトの team_key（giants, hawksなど）へ変換する。
+    対応表にない表記は None を返す。
+    """
+    if not team_name:
+        return None
+    name = team_name.strip()
+    if name in TEAM_NAME_TO_KEY:
+        return TEAM_NAME_TO_KEY[name]
+    # 対応表にない表記ゆれ（正式名称の一部表記など）を部分一致で救済する。
+    # 長い表記から優先することで「巨人」より「読売ジャイアンツ」を優先的にマッチさせる。
+    for known_name in sorted(TEAM_NAME_TO_KEY, key=len, reverse=True):
+        if known_name in name:
+            return TEAM_NAME_TO_KEY[known_name]
+    return None
 KNOWN_SCOUT_STAFF_NAMES = [
     '福澤洋一', '木塚敦志', '宮田善久', '山本省吾', '河野亮', '近藤弘樹',
     '岡野祐一郎', '斉藤宜之', '上村和裕', '大本将吾', '小川淳司', '森中聖雄',
@@ -217,7 +278,7 @@ def has_player_candidate(text: str) -> bool:
     return has_attention_candidate(text) or has_scout_comment_candidate(text)
 
 
-def calculate_attention_score(team_count: int, person_count: int, teams: List[str], has_mlb: bool, has_comment_candidate: bool) -> int:
+def calculate_attention_score(team_count: int, person_count: int, team_keys: List[str], has_mlb: bool, has_comment_candidate: bool) -> int:
     score = 0
     if team_count >= 12:
         score = 5
@@ -227,7 +288,7 @@ def calculate_attention_score(team_count: int, person_count: int, teams: List[st
         score = 3
     elif team_count >= 2:
         score = 2
-    elif teams:
+    elif team_keys:
         score = 2
     elif person_count > 0:
         score = 1
@@ -286,20 +347,22 @@ def extract_attention_rows(article: Dict[str, Any]) -> List[List[Any]]:
 
             person_count = _extract_scout_person_count(sentence)
 
-            teams = []
+            team_keys = []
             for team in JAPANESE_TEAM_NAMES:
-                if team in sentence and team not in teams:
-                    teams.append(team)
+                if team in sentence:
+                    team_key = normalize_team_key(team)
+                    if team_key and team_key not in team_keys:
+                        team_keys.append(team_key)
 
             has_mlb = bool(re.search(r'(MLB|ＭＬＢ|メジャー|大リーグ|日米)', sentence))
-            has_npb = bool(re.search(r'(NPB|ＮＰＢ|プロ野球|球団|スカウト|視察)', sentence)) or bool(teams)
+            has_npb = bool(re.search(r'(NPB|ＮＰＢ|プロ野球|球団|スカウト|視察)', sentence)) or bool(team_keys)
             has_comment = has_scout_comment_candidate(sentence)
             has_scout_presence = bool(re.search(r'スカウト', sentence))
 
-            if not (team_count or person_count or teams or has_mlb or has_comment or has_scout_presence):
+            if not (team_count or person_count or team_keys or has_mlb or has_comment or has_scout_presence):
                 continue
 
-            score = calculate_attention_score(team_count, person_count, teams, has_mlb, has_comment)
+            score = calculate_attention_score(team_count, person_count, team_keys, has_mlb, has_comment)
             if score == 0 and has_scout_presence:
                 score = 1
             rows.append([
@@ -310,7 +373,7 @@ def extract_attention_rows(article: Dict[str, Any]) -> List[List[Any]]:
                 article.get('url', ''),
                 team_count,
                 person_count,
-                ', '.join(teams),
+                ', '.join(team_keys),
                 'TRUE' if has_npb else 'FALSE',
                 'TRUE' if has_mlb else 'FALSE',
                 score,

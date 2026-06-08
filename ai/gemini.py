@@ -8,6 +8,7 @@ import json
 import re
 from typing import List, Dict, Any, Optional
 from config import GEMINI_API_KEY, GEMINI_MODEL
+from utils import normalize_team_key, ALL_NPB_TEAM_KEYS
 
 def setup_gemini():
     """
@@ -231,6 +232,56 @@ URL: {link}
         return []
 
 
+def extract_scout_visits_with_gemini(article_text: str, title: str, published: str, link: str) -> List[Dict[str, Any]]:
+    """
+    記事から「どの球団が、どの選手を、何人で、いつ視察したか」という視察情報を抽出する。
+    """
+    try:
+        model = setup_gemini()
+
+        prompt = f"""
+あなたはプロ野球のスカウト視察情報抽出AIです。
+以下の記事本文から、「どの球団が」「どの選手を」「何人で」「いつ」視察したかという視察情報をすべて抽出してください。
+
+【抽出対象の定義】
+- 球団スカウトが特定の選手を視察・観戦・調査したという記述
+- 「○○は○人態勢で視察」「○○球団のスカウトが訪れ」のような表現
+- 視察対象の選手名が明記されていないものは抽出しない
+- 「NPB全12球団」「12球団」のように、視察に来た球団数が"NPB全体の球団数（12）"と一致する形で書かれている場合、それは実質的に「全球団」を意味するので、is_all_npb_teams を true にして1要素だけ出力する（個別球団ごとに分けなくてよい。team_nameはnullのままでよい）
+- 「10球団」「主だった球団」のように、12球団に満たない・全球団かどうか不明な人数・規模で書かれている場合は、is_all_npb_teams は false とし、team_name は null のまま「規模情報」として出力する（その人数の内訳球団は記事から特定できないため、個別球団として展開しない）
+- 同じ文や段落の中に、上記のような集合的な表現と、個別の球団名（例: 「巨人の○○、日本ハムの○○も視察」）が両方含まれる場合は、集合表現と個別球団の両方をそれぞれ別要素として出力する（集合表現側はteam_name null、個別球団側はteam_name入りで、互いに重複や矛盾しないよう書き分ける）
+- 1つの記事に複数球団・複数選手の視察情報があれば、それぞれ別の要素として出力する
+
+【出力形式】
+JSON配列のみを返してください。説明文、Markdown、コードブロックは不要です。
+該当する視察情報がなければ [] を返してください。
+
+各要素のキー:
+- player_name: 視察対象の選手名。フルネームが分かれば。必須。
+- team_name: 視察した球団名。記事中の表記のまま（例: "日本ハム", "ソフトバンク"）。個別球団が特定できなければ null。
+- is_all_npb_teams: 視察に来た球団がNPB全12球団（＝全球団）であると記事から判断できる場合は true、そうでなければ false。
+- person_count: その球団（または集合的な視察全体）から視察に来た人数の数値。記載がなければ null。
+- event_date_text: 視察の時期に関する記事中の表現をそのまま（例: "今月上旬", "5月20日の練習試合"）。なければ null。
+- event_date: 視察日をYYYY-MM-DD形式で推定したもの。記事の公開日（{published}）を基準に、相対的な時期表現から推定してください。全く推定できなければ null。
+- event_date_precision: 推定の確からしさ。日付が記事中に明記されている場合は "exact"、相対的な表現からの推定なら "approximate"、推定できない場合は "unknown"。
+- evidence: 抽出根拠になる記事中の短い文。
+
+【記事情報】
+タイトル: {title}
+公開日: {published}
+URL: {link}
+
+【本文】
+{article_text}
+"""
+        response = model.generate_content(prompt)
+        return _parse_json_array(response.text)
+
+    except Exception as e:
+        print(f"[Generative AI Gemini 視察情報抽出エラー] {e}")
+        return []
+
+
 def process_articles_with_ai(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     記事リストにAIコメント抽出を適用（スカウトコメント候補記事のみ）
@@ -356,4 +407,88 @@ def process_player_candidates_with_ai(articles: List[Dict[str, Any]]) -> List[Di
         processed_articles.append(article)
 
     print(f"[DEBUG] has_player_candidate=True の記事数: {candidate_count}")
+    return processed_articles
+
+
+def process_scout_visits_with_ai(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    視察情報候補記事にAI抽出を適用し、article['scout_visit_rows']へ格納する。
+    """
+    processed_articles = []
+    visit_candidate_count = 0
+
+    for article in articles:
+        scout_visit_rows: List[Dict[str, Any]] = []
+
+        if article.get('has_attention_candidate', False):
+            visit_candidate_count += 1
+            try:
+                full_text = f"{article.get('title', '')}\n\n{article.get('body', '')}"
+                print(f"[DEBUG] 視察情報AI処理実行: {article.get('title', '')[:50]}...")
+                extracted = extract_scout_visits_with_gemini(
+                    full_text,
+                    article.get('title', ''),
+                    article.get('date', ''),
+                    article.get('url', ''),
+                )
+
+                named_items = []
+                all_teams_items = []
+                for item in extracted:
+                    player_name = (item.get('player_name') or '').strip()
+                    if not player_name or player_name in ('不明', 'unknown', 'Unknown'):
+                        continue
+                    team_name = (item.get('team_name') or '').strip() or None
+                    if not team_name and item.get('is_all_npb_teams'):
+                        all_teams_items.append((player_name, item))
+                    else:
+                        named_items.append((player_name, team_name, item))
+
+                def _build_base_row(player_name, item):
+                    return {
+                        'player_name': player_name,
+                        'person_count': item.get('person_count'),
+                        'event_date_text': item.get('event_date_text'),
+                        'event_date': item.get('event_date'),
+                        'event_date_precision': item.get('event_date_precision'),
+                        'source_url': article.get('url', ''),
+                        'source_title': article.get('title', ''),
+                        'published_at': article.get('date', ''),
+                        'source': article.get('source', ''),
+                        'article_category': article.get('category', ''),
+                        'evidence': item.get('evidence'),
+                        'extracted_raw': item,
+                    }
+
+                # 個別球団名が判明している視察情報を先に確定する
+                named_team_keys_by_player: Dict[str, set] = {}
+                for player_name, team_name, item in named_items:
+                    team_key = normalize_team_key(team_name)
+                    named_team_keys_by_player.setdefault(player_name, set())
+                    if team_key:
+                        named_team_keys_by_player[player_name].add(team_key)
+                    row = _build_base_row(player_name, item)
+                    row['team_name'] = team_name
+                    row['team_key'] = team_key
+                    scout_visit_rows.append(row)
+
+                # 「NPB全12球団が視察」は、個別に名前が挙がっている球団を除いて確定情報として展開する
+                for player_name, item in all_teams_items:
+                    already_named = named_team_keys_by_player.get(player_name, set())
+                    for all_team_key in ALL_NPB_TEAM_KEYS:
+                        if all_team_key in already_named:
+                            continue
+                        row = _build_base_row(player_name, item)
+                        row['team_name'] = None
+                        row['team_key'] = all_team_key
+                        scout_visit_rows.append(row)
+            except Exception as e:
+                print(f"[エラー] 視察情報AI処理失敗: {article.get('title', '')} - {e}")
+        else:
+            print(f"[DEBUG] 視察情報候補なし、AI処理スキップ: {article.get('title', '')[:50]}...")
+
+        article['scout_visit_rows'] = scout_visit_rows
+        processed_articles.append(article)
+
+    print(f"[DEBUG] has_attention_candidate=True の記事数: {visit_candidate_count}")
     return processed_articles
