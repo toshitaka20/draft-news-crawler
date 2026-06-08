@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import hashlib
 from typing import List, Dict, Optional, Tuple, Any, Set
 from datetime import datetime, timezone, timedelta
@@ -1153,6 +1154,606 @@ class SupabaseScoutVisitStore:
             return {'total': len(rows), 'inserted': 0, 'duplicates': duplicates, 'errors': len(records)}
 
 
+class SupabaseDraftWatchCandidateStore:
+    """
+    draft_watch_article_candidates / draft_watch_article_candidate_sources への
+    Draft-Watch記事候補の保存・トピック判定・下書き生成（Phase 4）。
+
+    1日1回の朝バッチから呼び出され、前回バッチ以降に増えた attention_signals を起点に
+    トピック判定（topic_key一致 → ルールベース近傍判定）でトピックへ合流させるか新規作成し、
+    summary_json / importance_score を更新したうえで、閾値を超えた候補だけ下書きをAI生成する。
+    """
+
+    DEFAULT_LOOKBACK_HOURS = 30
+    GENERATION_THRESHOLD = 1
+    NEAR_MATCH_DAYS = 3
+
+    def __init__(self, dummy_mode: bool = False):
+        self.dummy_mode, self.supabase = _init_supabase_client(dummy_mode=dummy_mode)
+        if not self.dummy_mode:
+            print("✅ Supabaseクライアントを初期化しました（draft_watch_article_candidates）")
+
+    @staticmethod
+    def _to_optional_str(value: Any) -> Optional[str]:
+        text = str(value or '').strip()
+        return text or None
+
+    @staticmethod
+    def _to_int_or_zero(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _parse_event_date(value: Optional[str]):
+        if not value:
+            return None
+        try:
+            return datetime.strptime(str(value)[:10], '%Y-%m-%d').date()
+        except (TypeError, ValueError):
+            return None
+
+    def get_cutoff_iso(self) -> str:
+        """
+        「それまでに溜まった記事」の起点時刻を決める。
+        前回バッチが作成した出典の最終時刻を起点にし、まだ候補が無ければ DEFAULT_LOOKBACK_HOURS 時間前を使う。
+        """
+        fallback = (now_jst() - timedelta(hours=self.DEFAULT_LOOKBACK_HOURS)).isoformat()
+        if self.dummy_mode or self.supabase is None:
+            return fallback
+        try:
+            response = (
+                self.supabase
+                .table('draft_watch_article_candidate_sources')
+                .select('created_at')
+                .order('created_at', desc=True)
+                .limit(1)
+                .execute()
+            )
+            rows = response.data or []
+            if rows and rows[0].get('created_at'):
+                return rows[0]['created_at']
+        except Exception as e:
+            print(f"[DB] draft_watch_article_candidate_sources cutoff取得エラー: {e}")
+        return fallback
+
+    def fetch_attention_signals_since(self, cutoff_iso: str) -> List[Dict[str, Any]]:
+        if self.dummy_mode or self.supabase is None:
+            return []
+        try:
+            response = (
+                self.supabase
+                .table('attention_signals')
+                .select('*')
+                .gt('created_at', cutoff_iso)
+                .order('created_at')
+                .execute()
+            )
+            return response.data or []
+        except Exception as e:
+            print(f"[DB] attention_signals 取得エラー: {e}")
+            return []
+
+    def fetch_player_info(self, player_ids: List[str], player_candidate_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """`player:{id}` / `candidate:{id}` -> {'name','team','positions','draft_year'} のマップを返す。"""
+        info: Dict[str, Dict[str, Any]] = {}
+        if self.dummy_mode or self.supabase is None:
+            return info
+
+        unique_player_ids = sorted({pid for pid in player_ids if pid})
+        if unique_player_ids:
+            try:
+                response = (
+                    self.supabase
+                    .table('players')
+                    .select('id,name,team,position,draft_year')
+                    .in_('id', unique_player_ids)
+                    .execute()
+                )
+                for row in response.data or []:
+                    if row.get('id'):
+                        info[f"player:{row['id']}"] = row
+            except Exception as e:
+                print(f"[DB] players 取得エラー: {e}")
+
+        unique_candidate_ids = sorted({cid for cid in player_candidate_ids if cid})
+        if unique_candidate_ids:
+            try:
+                response = (
+                    self.supabase
+                    .table('player_candidates')
+                    .select('id,name,team,position,draft_year')
+                    .in_('id', unique_candidate_ids)
+                    .execute()
+                )
+                for row in response.data or []:
+                    if row.get('id'):
+                        info[f"candidate:{row['id']}"] = row
+            except Exception as e:
+                print(f"[DB] player_candidates 取得エラー: {e}")
+
+        return info
+
+    def fetch_scout_visits_for_urls(self, source_urls: List[str]) -> List[Dict[str, Any]]:
+        if self.dummy_mode or self.supabase is None or not source_urls:
+            return []
+        try:
+            response = (
+                self.supabase
+                .table('scout_visits')
+                .select('source_url,team_key,player_name,event_date,event_date_text,evidence')
+                .in_('source_url', sorted(set(source_urls)))
+                .execute()
+            )
+            return response.data or []
+        except Exception as e:
+            print(f"[DB] scout_visits 取得エラー: {e}")
+            return []
+
+    def fetch_scout_comments_for_urls(self, source_urls: List[str]) -> List[Dict[str, Any]]:
+        if self.dummy_mode or self.supabase is None or not source_urls:
+            return []
+        try:
+            response = (
+                self.supabase
+                .table('scout_comments')
+                .select('source_url,team_name,scout_name,comment,player_name')
+                .in_('source_url', sorted(set(source_urls)))
+                .execute()
+            )
+            return response.data or []
+        except Exception as e:
+            print(f"[DB] scout_comments 取得エラー: {e}")
+            return []
+
+    def _resolve_event_date(self, source_url: str, player_name: Optional[str], published_at: Any) -> Tuple[Optional[str], Optional[str]]:
+        """
+        トピックの「出来事の日付」を決める。scout_visitsに推定日があればそれを優先し、
+        なければ記事の公開日（published_atの日付部分）を使う。
+        """
+        if player_name:
+            visits = self.fetch_scout_visits_for_urls([source_url])
+            for visit in visits:
+                if visit.get('player_name') == player_name and visit.get('event_date'):
+                    return visit['event_date'], visit.get('event_date_text')
+
+        if published_at:
+            return str(published_at)[:10], None
+        return None, None
+
+    def find_candidate_by_topic_key(self, topic_key: Optional[str]) -> Optional[Dict[str, Any]]:
+        if self.dummy_mode or self.supabase is None or not topic_key:
+            return None
+        try:
+            response = (
+                self.supabase
+                .table('draft_watch_article_candidates')
+                .select('*')
+                .eq('topic_key', topic_key)
+                .limit(1)
+                .execute()
+            )
+            rows = response.data or []
+            return rows[0] if rows else None
+        except Exception as e:
+            print(f"[DB] draft_watch_article_candidates topic_key検索エラー: {e}")
+            return None
+
+    def find_candidate_by_rule(
+        self,
+        topic_type: str,
+        main_player_id: Optional[str],
+        main_player_name: Optional[str],
+        event_date: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        topic_keyの完全一致で見つからない場合の近傍判定。
+        同じtopic_typeかつ主役選手が一致する候補のうち、出来事の日付が前後 NEAR_MATCH_DAYS 日以内のものを合流先とする。
+        """
+        if self.dummy_mode or self.supabase is None:
+            return None
+        if not (main_player_id or main_player_name):
+            return None
+
+        try:
+            query = (
+                self.supabase
+                .table('draft_watch_article_candidates')
+                .select('*')
+                .eq('topic_type', topic_type)
+                .in_('status', ['draft', 'reviewed'])
+                .order('created_at', desc=True)
+                .limit(20)
+            )
+            if main_player_id:
+                query = query.eq('main_player_id', main_player_id)
+            elif main_player_name:
+                query = query.eq('main_player_name', main_player_name)
+            candidates = query.execute().data or []
+        except Exception as e:
+            print(f"[DB] draft_watch_article_candidates 近傍検索エラー: {e}")
+            return None
+
+        target_date = self._parse_event_date(event_date)
+        if target_date is None:
+            return candidates[0] if candidates else None
+
+        for candidate in candidates:
+            for event in (candidate.get('summary_json') or {}).get('events') or []:
+                candidate_date = self._parse_event_date(event.get('date'))
+                if candidate_date and abs((candidate_date - target_date).days) <= self.NEAR_MATCH_DAYS:
+                    return candidate
+        return None
+
+    def get_sources(self, candidate_id: str) -> List[Dict[str, Any]]:
+        if self.dummy_mode or self.supabase is None:
+            return []
+        try:
+            response = (
+                self.supabase
+                .table('draft_watch_article_candidate_sources')
+                .select('*')
+                .eq('draft_watch_article_candidate_id', candidate_id)
+                .order('created_at')
+                .execute()
+            )
+            return response.data or []
+        except Exception as e:
+            print(f"[DB] draft_watch_article_candidate_sources 取得エラー: {e}")
+            return []
+
+    def add_source(self, candidate_id: str, crawled_article_id: Optional[str], source_url: str, role: str) -> bool:
+        if self.dummy_mode or self.supabase is None:
+            return False
+        try:
+            self.supabase.table('draft_watch_article_candidate_sources').insert({
+                'draft_watch_article_candidate_id': candidate_id,
+                'crawled_article_id': crawled_article_id,
+                'source_url': source_url,
+                'role': role,
+            }).execute()
+            return True
+        except Exception as e:
+            # 既に同じ (candidate_id, source_url) が登録済み（unique制約）の場合もここに来る
+            print(f"[DB] draft_watch_article_candidate_sources 追加スキップ: {e}")
+            return False
+
+    def insert_candidate(self, record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if self.dummy_mode or self.supabase is None:
+            return None
+        try:
+            response = self.supabase.table('draft_watch_article_candidates').insert(record).execute()
+            rows = response.data or []
+            return rows[0] if rows else None
+        except Exception as e:
+            print(f"[DB] draft_watch_article_candidates 作成エラー: {e}")
+            return None
+
+    def update_candidate(self, candidate_id: str, fields: Dict[str, Any]) -> bool:
+        if self.dummy_mode or self.supabase is None:
+            return False
+        try:
+            self.supabase.table('draft_watch_article_candidates').update(fields).eq('id', candidate_id).execute()
+            return True
+        except Exception as e:
+            print(f"[DB] draft_watch_article_candidates 更新エラー: {e}")
+            return False
+
+    @staticmethod
+    def _build_placeholder_title(topic_type: str, main_player_name: Optional[str], signal: Dict[str, Any]) -> str:
+        """新規トピック作成時点のタイトル。下書きAI生成時にAIが付けたタイトルへ置き換えられる。"""
+        if topic_type == 'player_watch' and main_player_name:
+            team_count = signal.get('team_count') or 0
+            person_count = signal.get('person_count') or 0
+            if team_count or person_count:
+                return f"{main_player_name}にスカウト視察集中（{team_count}球団{person_count}人）"
+            return f"{main_player_name}にスカウトの注目集まる"
+        if topic_type == 'scout_meeting':
+            return "スカウト会議・編成動向まとめ"
+        return signal.get('source_title') or "ドラフト関連トピック"
+
+    def process_new_signals(self) -> Dict[str, int]:
+        """前回バッチ以降の attention_signals を起点に、トピック判定・候補更新・下書き生成を行う。"""
+        stats = {'signals': 0, 'candidates_created': 0, 'candidates_updated': 0, 'drafts_generated': 0, 'errors': 0}
+
+        if self.dummy_mode or self.supabase is None:
+            print("[DB] draft_watch_article_candidates 処理スキップ（ダミーモード）")
+            return stats
+
+        cutoff_iso = self.get_cutoff_iso()
+        signals = self.fetch_attention_signals_since(cutoff_iso)
+        stats['signals'] = len(signals)
+        if not signals:
+            print(f"[DraftWatch] 新着シグナルなし（基準時刻: {cutoff_iso}）")
+            return stats
+
+        print(f"[DraftWatch] 新着 attention_signals: {len(signals)}件（基準時刻: {cutoff_iso}）")
+
+        player_ids = [s.get('player_id') for s in signals if s.get('player_id')]
+        candidate_ids = [s.get('player_candidate_id') for s in signals if s.get('player_candidate_id')]
+        player_info = self.fetch_player_info(player_ids, candidate_ids)
+
+        source_urls_all = [s.get('source_url') for s in signals if s.get('source_url')]
+        crawled_id_map = SupabaseCrawledArticleStore(dummy_mode=False).get_article_id_map_by_urls(source_urls_all)
+
+        for signal in signals:
+            try:
+                self._process_single_signal(signal, player_info, crawled_id_map, stats)
+            except Exception as e:
+                print(f"[DraftWatch] シグナル処理エラー: {e}")
+                stats['errors'] += 1
+
+        return stats
+
+    def regenerate_all_drafts(self, only_missing: bool = False) -> Dict[str, int]:
+        """
+        既存の候補について summary_json / importance_score / 下書き本文を作り直す。
+        新着シグナルの有無に関係なく走るので、プロンプト改善を既存候補へ反映する用途に使う。
+        only_missing=True のときは本文（draft_article_markdown）が未生成の候補だけを対象にする。
+        status=draft（人間レビュー前）の候補のみ対象。
+        """
+        stats = {'signals': 0, 'candidates_created': 0, 'candidates_updated': 0, 'drafts_generated': 0, 'errors': 0}
+
+        if self.dummy_mode or self.supabase is None:
+            print("[DB] draft_watch_article_candidates 再生成スキップ（ダミーモード）")
+            return stats
+
+        try:
+            rows = (self.supabase.table('draft_watch_article_candidates').select('*').execute()).data or []
+        except Exception as e:
+            print(f"[DB] 候補一覧取得エラー: {e}")
+            return stats
+
+        targets = []
+        for r in rows:
+            if r.get('status') != 'draft':
+                continue
+            if only_missing and r.get('draft_article_markdown'):
+                continue
+            targets.append(r)
+
+        print(f"[DraftWatch] 再生成対象: {len(targets)}件（only_missing={only_missing}）")
+
+        for candidate in targets:
+            try:
+                summary = candidate.get('summary_json') or {}
+                if isinstance(summary, str):
+                    summary = json.loads(summary)
+                main_player = summary.get('main_player') or {}
+                topic_type = summary.get('topic_type') or candidate.get('topic_type') or 'other'
+                main_player_name = candidate.get('main_player_name') or main_player.get('name')
+                main_player_team = main_player.get('team')
+                main_player_positions = main_player.get('positions') or main_player.get('position') or []
+                self._refresh_summary_and_score(
+                    candidate, topic_type, main_player_name, main_player_team, main_player_positions, stats
+                )
+                stats['candidates_updated'] += 1
+            except Exception as e:
+                print(f"[DraftWatch] 再生成エラー id={candidate.get('id')}: {e}")
+                stats['errors'] += 1
+
+        return stats
+
+    def _process_single_signal(
+        self,
+        signal: Dict[str, Any],
+        player_info: Dict[str, Dict[str, Any]],
+        crawled_id_map: Dict[str, str],
+        stats: Dict[str, int],
+    ) -> None:
+        from utils import normalize_player_key, build_topic_key, has_scout_meeting_signal
+
+        source_url = self._to_optional_str(signal.get('source_url'))
+        if not source_url:
+            return
+
+        evidence = self._to_optional_str(signal.get('evidence')) or ''
+        source_title = self._to_optional_str(signal.get('source_title'))
+        published_at = signal.get('published_at')
+
+        player_id = signal.get('player_id')
+        player_candidate_id = signal.get('player_candidate_id')
+        info = None
+        if player_id:
+            info = player_info.get(f"player:{player_id}")
+        elif player_candidate_id:
+            info = player_info.get(f"candidate:{player_candidate_id}")
+
+        main_player_name = self._to_optional_str(signal.get('player_name')) or (info.get('name') if info else None)
+        main_player_team = (info or {}).get('team')
+        main_player_positions = (info or {}).get('position') or []
+        draft_year = (info or {}).get('draft_year')
+
+        # トピック種別の判定（主役選手が分かれば player_watch、スカウト会議系の検出語があれば scout_meeting、それ以外は other）
+        if main_player_name:
+            topic_type = 'player_watch'
+        elif has_scout_meeting_signal(f"{source_title or ''}\n{evidence}"):
+            topic_type = 'scout_meeting'
+        else:
+            topic_type = 'other'
+
+        event_date, _event_date_text = self._resolve_event_date(source_url, main_player_name, published_at)
+
+        topic_key = None
+        if topic_type == 'player_watch':
+            topic_key = build_topic_key(
+                'player_watch',
+                draft_year=draft_year,
+                player_key=normalize_player_key(main_player_name),
+                event_date=event_date,
+            )
+        elif topic_type == 'scout_meeting':
+            team_keys = signal.get('team_keys') or []
+            topic_key = build_topic_key(
+                'scout_meeting',
+                team=(team_keys[0] if team_keys else None),
+                meeting_date=event_date,
+                draft_year=draft_year,
+            )
+
+        if not topic_key:
+            normalized_title = re.sub(r'\s+', '', source_title or evidence)
+            title_hash = hashlib.md5(normalized_title.encode('utf-8')).hexdigest()
+            topic_key = build_topic_key('other', title_hash=title_hash)
+            topic_type = 'other'
+
+        candidate = self.find_candidate_by_topic_key(topic_key)
+        if not candidate:
+            candidate = self.find_candidate_by_rule(topic_type, player_id, main_player_name, event_date)
+
+        crawled_article_id = crawled_id_map.get(source_url)
+
+        if candidate is None:
+            record = {
+                'topic_key': topic_key,
+                'topic_type': topic_type,
+                'main_player_id': player_id,
+                'main_player_name': main_player_name,
+                'title': self._build_placeholder_title(topic_type, main_player_name, signal),
+                'importance_score': 0,
+                'source_urls': [source_url],
+                'status': 'draft',
+            }
+            candidate = self.insert_candidate(record)
+            if not candidate:
+                stats['errors'] += 1
+                return
+            self.add_source(candidate['id'], crawled_article_id, source_url, role='primary')
+            stats['candidates_created'] += 1
+            print(f"[DraftWatch] 新規トピック作成: {topic_key} ({record['title']})")
+        else:
+            if source_url in (candidate.get('source_urls') or []):
+                return
+            if not self.add_source(candidate['id'], crawled_article_id, source_url, role='source'):
+                return
+            source_urls = list(dict.fromkeys((candidate.get('source_urls') or []) + [source_url]))
+            self.update_candidate(candidate['id'], {'source_urls': source_urls})
+            candidate['source_urls'] = source_urls
+            stats['candidates_updated'] += 1
+            print(f"[DraftWatch] 既存トピックへ合流: {candidate.get('topic_key')} <- {source_url}")
+
+        self._refresh_summary_and_score(
+            candidate, topic_type, main_player_name, main_player_team, main_player_positions, stats
+        )
+
+    def _refresh_summary_and_score(
+        self,
+        candidate: Dict[str, Any],
+        topic_type: str,
+        main_player_name: Optional[str],
+        main_player_team: Optional[str],
+        main_player_positions: List[str],
+        stats: Dict[str, int],
+    ) -> None:
+        """
+        候補に紐づく全ソースの情報からsummary_jsonを作り直し、importance_scoreを再計算する。
+        importance_scoreが閾値を超え、かつまだ人間レビュー前（status=draft）なら下書きをAI生成（再生成含む）する。
+        """
+        candidate_id = candidate['id']
+        sources = self.get_sources(candidate_id)
+        source_urls = [s.get('source_url') for s in sources if s.get('source_url')]
+        if not source_urls:
+            return
+
+        try:
+            related_signals = (
+                self.supabase
+                .table('attention_signals')
+                .select('*')
+                .in_('source_url', source_urls)
+                .execute()
+            ).data or []
+        except Exception as e:
+            print(f"[DB] attention_signals 関連取得エラー: {e}")
+            related_signals = []
+
+        scout_visits = self.fetch_scout_visits_for_urls(source_urls)
+        scout_comments = self.fetch_scout_comments_for_urls(source_urls)
+
+        team_count = max((self._to_int_or_zero(s.get('team_count')) for s in related_signals), default=0)
+        person_count = max((self._to_int_or_zero(s.get('person_count')) for s in related_signals), default=0)
+        has_mlb = any(bool(s.get('has_mlb')) for s in related_signals)
+        team_keys = sorted(
+            {key for s in related_signals for key in (s.get('team_keys') or [])}
+            | {v.get('team_key') for v in scout_visits if v.get('team_key')}
+        )
+
+        meta_by_url: Dict[str, Dict[str, Optional[str]]] = {}
+        events = []
+        seen_event_keys: Set[Tuple[Optional[str], str]] = set()
+        for s in related_signals:
+            url = s.get('source_url')
+            if url and url not in meta_by_url:
+                meta_by_url[url] = {'title': s.get('source_title'), 'source': s.get('source')}
+            date = str(s.get('published_at'))[:10] if s.get('published_at') else None
+            summary = self._to_optional_str(s.get('evidence'))
+            if not summary:
+                continue
+            key = (date, summary)
+            if key in seen_event_keys:
+                continue
+            seen_event_keys.add(key)
+            events.append({'date': date, 'summary': summary})
+        events.sort(key=lambda e: e.get('date') or '')
+
+        scout_comment_entries = [
+            {'team': c.get('team_name'), 'scout_name': c.get('scout_name'), 'comment': c.get('comment')}
+            for c in scout_comments
+        ]
+
+        source_entries = []
+        for s in sources:
+            url = s.get('source_url')
+            meta = meta_by_url.get(url, {})
+            source_entries.append({
+                'url': url,
+                'title': meta.get('title'),
+                'source': meta.get('source'),
+                'role': s.get('role'),
+            })
+
+        summary_json = {
+            'topic_type': topic_type,
+            'topic_key': candidate.get('topic_key'),
+            'main_player': (
+                {'name': main_player_name, 'team': main_player_team, 'positions': main_player_positions}
+                if main_player_name else None
+            ),
+            'attention': {
+                'team_count': team_count,
+                'person_count': person_count,
+                'teams': team_keys,
+                'has_mlb': has_mlb,
+            },
+            'scout_comments': scout_comment_entries,
+            'events': events,
+            'sources': source_entries,
+            'warnings': [],
+        }
+
+        base_score = max((self._to_int_or_zero(s.get('score')) for s in related_signals), default=0)
+        multi_source_bonus = min(max(len(source_urls) - 1, 0), 3)
+        meeting_bonus = 2 if topic_type == 'scout_meeting' else 0
+        importance_score = base_score + multi_source_bonus + meeting_bonus
+
+        update_fields: Dict[str, Any] = {
+            'summary_json': summary_json,
+            'importance_score': importance_score,
+        }
+
+        if importance_score >= self.GENERATION_THRESHOLD and candidate.get('status') == 'draft':
+            from ai.gemini import generate_draft_watch_article_with_gemini
+            generated = generate_draft_watch_article_with_gemini(summary_json)
+            if generated:
+                update_fields['draft_article_markdown'] = generated['markdown']
+                update_fields['title'] = generated['title']
+                stats['drafts_generated'] += 1
+                print(f"[DraftWatch] 下書き生成: {generated['title']}（importance_score={importance_score}）")
+
+        self.update_candidate(candidate_id, update_fields)
+
+
 class SupabaseScoutCommentInserter:
     """Supabaseにスカウトコメントを直接INSERTする機能"""
     
@@ -1504,6 +2105,23 @@ def insert_scout_visits(articles: List[Dict[str, Any]], dummy_mode: bool = False
     """視察情報を scout_visits にINSERT"""
     store = SupabaseScoutVisitStore(dummy_mode=dummy_mode)
     return store.insert_scout_visits(articles)
+
+def process_draft_watch_candidates(dummy_mode: bool = False) -> Dict[str, int]:
+    """
+    Draft-Watch記事候補のトピック判定・更新・下書き生成を行う（Phase 4: 1日1回の朝バッチ専用）。
+    前回バッチ以降に蓄積された attention_signals を起点に処理する。
+    """
+    store = SupabaseDraftWatchCandidateStore(dummy_mode=dummy_mode)
+    return store.process_new_signals()
+
+def regenerate_draft_watch_drafts(only_missing: bool = False, dummy_mode: bool = False) -> Dict[str, int]:
+    """
+    既存のDraft-Watch候補（status=draft）について summary_json / importance_score / 下書き本文を作り直す。
+    プロンプト改善を既存候補へ反映したいときに使う（新着シグナルの有無に依存しない）。
+    only_missing=True なら本文が未生成の候補だけを対象にする。
+    """
+    store = SupabaseDraftWatchCandidateStore(dummy_mode=dummy_mode)
+    return store.regenerate_all_drafts(only_missing=only_missing)
 
 def get_existing_crawled_urls_by_source(source: str, dummy_mode: bool = False) -> Set[str]:
     """crawled_articles から指定ソースの既存URLを取得"""

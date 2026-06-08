@@ -1097,13 +1097,38 @@ Sheetsは正本ではなく、レビュー用ビューにする。
 - 同じ `source_url` の選手根拠があれば、`player_id` / `player_candidate_id` を補完する。
 - Draft-Watch記事化判定はこのテーブルを使う。
 
-### Phase 4: Draft-Watch記事候補を作る
+### Phase 4: Draft-Watch記事候補を作る（実装済み）
 
-- `draft_watch_article_candidates`（`topic_key` / `merged_into_id` 含む）を作成する。
-- `draft_watch_article_candidate_sources`（`role` 含む）を作成する。
-- 新着記事ごとに `topic_key` を生成し、既存候補とのマッチング判定（完全一致 → ルールベース近傍判定）でトピックへ合流させるか新規作成するかを決める。
-- 注目度スコア、スカウト会議検出から `summary_json` を作り、閾値を超えた候補だけ `draft_article_markdown` をAI生成する。
-- 公開は手動確認にする。
+- `draft_watch_article_candidates` / `draft_watch_article_candidate_sources` は `database/schema_data_pipeline_phase2_4.sql` で作成済み（Supabase上に存在することを確認済み）。
+- 実装本体は `database.supabase_client.SupabaseDraftWatchCandidateStore`（`process_draft_watch_candidates()`）と、エントリポイント `main_draft_watch.py`。
+
+実行タイミングの設計判断（2026年6月時点）:
+
+- `main_regular.py`（1日3回）/ `main_yahoo_sponavi.py`（毎時）と同じ「クロールのたびに動かす」方式にはしない。記事化候補条件（12球団視察・複数ソース集約など）はトピック単位で蓄積されるため、クロール直後の断片的な状態で毎回判定・生成し直すのは無駄が大きい。
+- 代わりに `main_draft_watch.py` を**独立した1日1回・朝のバッチ**として新設し、`.github/workflows/draft-watch-daily.yml`（JST 6:00 = UTC前日21:00、その日最初のクロールより前）から実行する。
+- 「それまでに溜まった記事」を対象にするため、起点時刻（cutoff）は固定の時刻ではなく **前回バッチが `draft_watch_article_candidate_sources` に追加した出典の最終 `created_at`** を使う（`SupabaseDraftWatchCandidateStore.get_cutoff_iso()`）。候補がまだ無い初回は `DEFAULT_LOOKBACK_HOURS`（30時間）前を起点にする。これにより、バッチが多少遅延・失敗しても次回実行時に取りこぼしなく続きから処理できる（状態テーブルを別途持つ必要がない）。
+- 判定の入力は `attention_signals`（Draft-Watch記事化判定の正本）を起点に、`scout_visits` / `scout_comments` / `players` / `player_candidates` を補助情報として参照する。
+
+実装したロジックの概要:
+
+- **topic_type判定**: シグナルに紐づく選手名が分かれば `player_watch`、無ければ本文・タイトルにスカウト会議検出語（`utils.SCOUT_MEETING_KEYWORDS`）が含まれれば `scout_meeting`、それ以外は `other`。
+- **event_date解決**: 同じ `source_url` ＋選手名で `scout_visits.event_date` が取れればそれを優先し、無ければ記事の `published_at` の日付部分を使う（`_resolve_event_date`）。
+- **topic_key生成**: `utils.normalize_player_key()` / `utils.build_topic_key()` でドキュメント記載の形式（`player_watch:{draft_year}:{player_key}:{event_date}` など）に従って生成する。必要な要素が欠ける場合は `other:{normalized_title_hash}` にフォールバックする。
+- **マッチング**: まず `topic_key` の完全一致（`find_candidate_by_topic_key`）、無ければ「同じ `topic_type` ＋ 主役選手が一致 ＋ 出来事の日付が前後3日以内」のルールベース近傍判定（`find_candidate_by_rule`、`status` が `draft`/`reviewed` の候補のみ対象）で合流先を探す。どちらも見つからなければ新規候補を `primary` ソース付きで作成する。
+- **summary_json再構築**: 候補に紐づく全ソースの `attention_signals` / `scout_visits` / `scout_comments` を集約し直し、`team_count` / `person_count` は最大値、`teams` は和集合、`events` は重複排除した時系列リストとして組み立てる（`_refresh_summary_and_score`）。
+- **importance_score**: `attention_signals.score`（既存の注目度スコア、最大値）＋ ソース数に応じた多重報道ボーナス（最大+3）＋ スカウト会議トピックのボーナス（+2）。
+- **下書き生成**: `importance_score >= GENERATION_THRESHOLD`（初期値1。`attention_signals` が作られた時点でほぼ何らかの注目シグナルがある＝score>=1のため、実質的に「`attention_signals` が紐づいた候補は基本的に下書きまで作る」という運用方針）かつ `status = 'draft'`（人間レビュー前）の場合のみ `ai.gemini.generate_draft_watch_article_with_gemini()` を呼び、`summary_json` を渡してタイトル＋本文を生成する。本文は Markdown の `##` 中見出しで構造化し、「リード文（見出しなし導入）→ 内容ごとの `## 中見出し` セクション → `## 出典`」という、ドラフト専門メディア（draft-kaigi.jp 等）の書き方を踏襲した構成にしている。スカウト/関係者コメントは `summary_json.scout_comments` / `events` から「」＋（媒体名）形式で引用し、出典一覧は `summary_json.sources` の要素のみを列挙する（推測やevents本文を出典に混ぜない）。新しいソースが増えるたびに本処理が再実行されるため、自然と「差分追記ではなく作り直す」再生成になる。
+  - しきい値は「記事化に値するかの最終フィルタ」ではなく「`attention_signals` が全く紐づかない弱いトピック（`other` で `score=0` 相当）まで生成しない」程度の最低ラインとして position付けている。生成数が増えすぎる場合は、ここを引き上げるだけで絞り込める。
+
+- **既存候補の再生成（プロンプト改善の反映）**: 通常バッチは「前回以降の新着 `attention_signals`」が紐づいた候補だけを処理するため、`ai/gemini.py` の生成プロンプトを改善しても、新着シグナルが来ない既存候補には自動では反映されない。これを反映するための再生成モードを `main_draft_watch.py` に用意している。
+  - `python main_draft_watch.py --regenerate` … `status='draft'` の既存候補すべてについて `summary_json` / `importance_score` / 本文を作り直す（`regenerate_draft_watch_drafts()` → `SupabaseDraftWatchCandidateStore.regenerate_all_drafts()`）。
+  - `python main_draft_watch.py --regenerate-missing` … 本文（`draft_article_markdown`）が未生成の候補だけを対象に生成する。
+  - いずれも `status='draft'`（人間レビュー前）の候補のみ対象。`reviewed` / `published` 等に進んだ候補は上書きしない。
+
+実装上の注意（ドキュメントの推奨スキーマとの差分）:
+
+- 実際にSupabase上へ作成された `draft_watch_article_candidates` には `merged_into_id` が無く、`status` も `merged` を含まない（`draft` / `reviewed` / `published` / `rejected` のみ）。「取りこぼし救済（後から同一トピックと判明した候補のマージ）」の仕組みは未実装であり、今回のバッチもこれには対応していない。将来必要になった場合は別途スキーマ拡張から行う。
+- `draft_watch_article_candidate_sources` にも `source_title` / `source` / `published_at` 列が無いため、`summary_json.sources` の表示用メタ情報（タイトル・媒体名）は紐づく `attention_signals` から補っている。
 
 ### Phase 5: 選手タイムラインを作る
 

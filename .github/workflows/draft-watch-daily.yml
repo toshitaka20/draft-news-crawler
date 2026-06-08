@@ -1,0 +1,41 @@
+name: Draft-Watch Article Candidate Batch (Daily Morning)
+
+on:
+  schedule:
+    - cron: '0 21 * * *'  # JST 6:00（UTC前日21:00） — その日最初の記事収集（regular 9時 / yahoo 5時〜）の前に、前回実行以降に溜まったシグナルをまとめて処理する
+  workflow_dispatch:  # 手動実行可能
+
+jobs:
+  run-draft-watch-batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Draft-Watch article candidate batch
+        run: python main_draft_watch.py
+        env:
+          GOOGLE_GENAI_API_KEY: ${{ secrets.GOOGLE_GENAI_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      - name: Upload logs as artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-draft-watch-${{ github.run_number }}
+          path: "*.log"
+          retention-days: 3

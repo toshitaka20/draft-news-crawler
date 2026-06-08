@@ -117,6 +117,79 @@ def normalize_team_key(team_name: Optional[str]) -> Optional[str]:
         if known_name in name:
             return TEAM_NAME_TO_KEY[known_name]
     return None
+
+
+def normalize_player_key(name: Optional[str]) -> Optional[str]:
+    """
+    選手名をtopic_key用の決定的なキーへ正規化する
+    （全角半角・スペース・敬称を除去した小文字キー）。
+    """
+    if not name:
+        return None
+    text = name.strip().replace('　', ' ')
+    text = re.sub(r'\s+', '', text)
+    text = re.sub(r'(選手|くん|君|さん)$', '', text)
+    return text.lower() or None
+
+
+def build_topic_key(
+    topic_type: str,
+    *,
+    draft_year: Optional[int] = None,
+    player_key: Optional[str] = None,
+    event_date: Optional[str] = None,
+    team: Optional[str] = None,
+    meeting_date: Optional[str] = None,
+    game_date: Optional[str] = None,
+    team_a: Optional[str] = None,
+    team_b: Optional[str] = None,
+    category: Optional[str] = None,
+    theme: Optional[str] = None,
+    title_hash: Optional[str] = None,
+) -> Optional[str]:
+    """
+    docs/data_pipeline_strategy.md の「トピックの単位とtopic_key」の形式で決定的なキーを生成する。
+    必要な要素が欠けている場合は None を返す（呼び出し側で topic_type=other にフォールバックする）。
+    """
+    if topic_type == 'player_watch':
+        if not player_key or not event_date:
+            return None
+        return f"player_watch:{draft_year or 'unknown'}:{player_key}:{event_date}"
+    if topic_type == 'scout_meeting':
+        if not team or not meeting_date:
+            return None
+        return f"scout_meeting:{team}:{meeting_date}:{draft_year or 'unknown'}"
+    if topic_type == 'game_report':
+        if not game_date or not team_a or not team_b:
+            return None
+        team_a_key, team_b_key = sorted([team_a, team_b])
+        return f"game_report:{game_date}:{team_a_key}:{team_b_key}"
+    if topic_type == 'ranking':
+        if not category or not theme:
+            return None
+        return f"ranking:{draft_year or 'unknown'}:{category}:{theme}"
+    if topic_type == 'other':
+        if not title_hash:
+            return None
+        return f"other:{title_hash}"
+    return None
+
+
+SCOUT_MEETING_KEYWORDS = [
+    'スカウト会議', '編成会議', 'ドラフト会議へ向け', 'リストアップ',
+    '上位候補', '1位候補', '指名候補', '候補選手を確認', '球団幹部',
+]
+
+
+def has_scout_meeting_signal(text: str) -> bool:
+    """
+    スカウト会議・編成会議系の記事を検出する（Draft-Watch記事化候補のtopic_type判定に使用）。
+    """
+    if not text:
+        return False
+    return any(keyword in text for keyword in SCOUT_MEETING_KEYWORDS)
+
+
 KNOWN_SCOUT_STAFF_NAMES = [
     '福澤洋一', '木塚敦志', '宮田善久', '山本省吾', '河野亮', '近藤弘樹',
     '岡野祐一郎', '斉藤宜之', '上村和裕', '大本将吾', '小川淳司', '森中聖雄',

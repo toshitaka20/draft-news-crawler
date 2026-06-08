@@ -172,6 +172,29 @@ def _parse_json_array(text: str) -> List[Dict[str, Any]]:
     return [item for item in parsed if isinstance(item, dict)]
 
 
+def _parse_json_object(text: str) -> Optional[Dict[str, Any]]:
+    if not text:
+        return None
+
+    cleaned = text.strip()
+    fenced_match = re.search(r'```(?:json)?\s*(.*?)\s*```', cleaned, flags=re.DOTALL)
+    if fenced_match:
+        cleaned = fenced_match.group(1).strip()
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        object_match = re.search(r'\{.*\}', cleaned, flags=re.DOTALL)
+        if not object_match:
+            return None
+        try:
+            parsed = json.loads(object_match.group(0))
+        except json.JSONDecodeError:
+            return None
+
+    return parsed if isinstance(parsed, dict) else None
+
+
 def extract_player_candidates_with_gemini(article_text: str, title: str, published: str, link: str) -> List[Dict[str, Any]]:
     """
     記事からDraft-Watch未登録候補になりうる選手情報を抽出する。
@@ -492,3 +515,93 @@ def process_scout_visits_with_ai(articles: List[Dict[str, Any]]) -> List[Dict[st
 
     print(f"[DEBUG] has_attention_candidate=True の記事数: {visit_candidate_count}")
     return processed_articles
+
+
+def generate_draft_watch_article_with_gemini(summary_json: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """
+    summary_json（複数ソースから整理済みの構造化データ）からDraft-Watch下書き記事を生成する。
+    外部記事の言い換えではなく、固定テンプレート（タイトル/リード文/本記/評価ポイント/見どころ/出典一覧）に
+    沿った独自記事として生成する。
+    """
+    try:
+        model = setup_gemini()
+
+        prompt = f"""
+あなたはプロ野球ドラフト専門メディア「Draft-Watch」の記者AIです。
+以下の構造化データ（複数の外部記事から整理済みの素材）をもとに、Draft-Watch独自の下書き記事を作成してください。
+
+【厳守事項】
+- 外部記事の文章をそのまま転載・言い換えしない。素材を整理し直した独自の記事にする。
+- 構造化データに含まれない情報を推測・創作しない（不明な点は無理に書かない）。
+- 記事は必ず Markdown の見出し（##）を使って構造化する。プレーンテキストの段落だけを並べてはいけない。
+  ドラフト専門メディアでよく見られる、次の構成・文体を踏襲する:
+
+  1. リード文（100〜150字程度、1段落）
+     - 見出しは付けず、記事冒頭の導入文として置く。
+     - 「誰が」「いつ・どこで」「何をしたか」を、具体的な数値（球速・成績・視察球団数など）を交えて簡潔に要約する。
+     - この一段落で記事の主題が伝わるようにする。
+
+  2. 本記（内容のまとまりごとに `## 中見出し` を付け、2〜3個のセクションに分ける）
+     - 見出しは「本記」「リード文」のような形式名ではなく、内容を表す具体的な小見出しにする
+       （例: 「## 11球団のスカウトが視察」「## 高校通算16本塁打の打撃力」「## 夏へ向けた成長」）。
+     - 各セクションは150〜400字程度。topic_typeに応じて以下の展開順序を選ぶ:
+       - 試合・プレー中心の話題（player_watchなど）の場合:
+         出来事の詳細描写（試合状況・投球内容・打撃内容など）
+         → 当該選手の対応や活躍ぶりの描写
+         → 本人のコメント（あれば「」で引用）
+         → スカウト・球団の視察・評価情報
+         → 経歴や成長過程（出身校・入団後の変化など、データにあるもののみ）
+         → 今後の目標や課題
+       - スカウト会議・候補リストアップ系の話題（scout_meetingなど）の場合:
+         会議や発表が行われた事実（いつ・どこで・誰が）
+         → 候補者数の絞り込みなど数値的な変化
+         → 上位候補として名前が挙がった選手の具体的な列挙（高校生・大学生・社会人などで層別できる場合は層別する。箇条書き `-` を使ってよい）
+         → 球団側の新方針や戦略についての言及
+     - いずれの場合も、データにある事実を時系列・論理順に並べ、推測で繋がない。
+
+  3. コメント・評価の引用ルール（本記の各セクション内で使う）
+     - 関係者やスカウトのコメントは「」で囲み、文末に（媒体名）の形で出典を明記する（例: 「～と話す」（スポーツニッポン））。
+     - 引用元はsummary_json中のscout_commentsやeventsなど、構造化データにある発言・出典のみを使う。創作した発言を「」に入れない。
+     - 文体は「～と話す」「～と振り返る」「～と指摘した」「～との評価を得ている」「～と見られる」など、関係者の声や評価を一歩引いた立場で紹介する表現を使う。
+     - 評価表現は「世代屈指の剛腕」「本格派右腕」のように簡潔で具体的なものを、データに基づく範囲で用いる。
+
+  4. 結び（`## 今後の見どころ` など内容に応じた見出しを付けた1段落）
+     - 断定的な評論で締めくくらず、今後の展開を示唆する書き方にする。
+     - 「～ことになりそうだ」「～注目が集まる」のように期待・予測を示す形、または会議・視察の事実を淡々と提示して読者の関心を持続させる形のどちらかを、データの性質に合わせて選ぶ。
+
+  5. 出典一覧（`## 出典` という見出しを付ける）
+     - その下に summary_json の sources 配列の要素「だけ」を「- [媒体名] タイトル」の形式で列挙する。
+     - sources に含まれない情報（eventsの本文や推測など）を出典として加えない。sources が1件なら出典も1行にする。
+
+  全体の文体は「～した」「～見せた」のような過去形・進行形を基本とし、数値は「156キロ」のように算用数字、球団数など概数的な表現は「9球団」のように漢数字も使い分ける。
+
+【出力形式】
+JSONオブジェクトのみを返してください。説明文、Markdownのコードブロック、前置きは不要です。
+キー:
+- title: 記事タイトル。ドラフト専門メディアで実際によく使われる、次のスタイルに沿って作る。
+  - 冒頭に【カテゴリ】タグを付ける（例: 【高校野球】【大学野球】【社会人野球】【スカウト会議】【ドラフト】など。summary_jsonのtopic_type・main_player.team・eventsの内容から最も適切なものを選ぶ）
+  - 「所属（学校・チーム名）＋選手名＋ポジション」を主語に、「何が起きたか」を具体的な動詞で表す（好投・好打・視察集中・スカウト会議での評価 など）
+  - summary_jsonにある具体的な数値（球速、成績、視察球団数・人数など）を積極的に盛り込み、説得力を持たせる。数値が無い場合は創作しない
+  - 「怪物」「熱視線」「驚愕」のように、内容に見合った範囲で読者の関心を引く一語を添えてもよい（事実と異なる誇張は禁止）
+  - 文末は「〜へ」「〜など注目」のように今後への期待を残す形で締めてもよい
+  - 全体で50〜90字程度を目安にする（一目で主題と数値的根拠が伝わる長さにする）
+- markdown: 上記構成に沿った本文（Markdown形式の文字列。タイトルの見出し行は含めない）
+
+【構造化データ】
+{json.dumps(summary_json, ensure_ascii=False, indent=2)}
+"""
+        response = model.generate_content(prompt)
+        parsed = _parse_json_object(response.text)
+        if not parsed:
+            return None
+
+        title = str(parsed.get('title') or '').strip()
+        markdown = str(parsed.get('markdown') or '').strip()
+        if not title or not markdown:
+            return None
+
+        return {'title': title, 'markdown': markdown}
+
+    except Exception as e:
+        print(f"[Generative AI Gemini Draft-Watch記事生成エラー] {e}")
+        return None
