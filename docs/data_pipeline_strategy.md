@@ -1139,6 +1139,8 @@ Sheetsは正本ではなく、レビュー用ビューにする。
 
 ### Phase 6: 選択候補のリサーチ付き昇格を作る
 
+> 詳細設計は `docs/phase6_player_promotion_design.md` を参照（リサーチ4サイト・スキーマ差分・モジュール構成・workflow_dispatch起動・`draft-watch`との住み分けを記載）。以下は概要。
+
 - 管理画面で複数の `player_candidates` を選択できるようにする。
 - 選択候補だけ外部検索・本文取得を行う。
 - `gemini-2.5-flash-lite` で `players` / `stats` / `player_achievements` 用JSONを作る。

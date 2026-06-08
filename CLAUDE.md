@@ -1,0 +1,46 @@
+# CLAUDE.md
+
+プロ野球ドラフト情報のクローラ＆データパイプライン。記事をクロール→選手候補/スカウトコメント/注目シグナルを抽出→Supabaseに蓄積し、Draft-Watch記事候補や選手データを生成する。
+
+公開サイト・管理画面は**別リポ `draft-watch`**（`/Users/hirabayashitoshitaka/draft-watch`、Next.js+OpenNext+Cloudflare Workers）。両リポは**Supabaseを結合点に疎結合**。重い処理（スクレイピング＋LLM）はこのリポ、画面とトリガは draft-watch が担う。
+
+## 主要コマンド
+
+```bash
+# クロール（記事収集→抽出→DB保存）
+PYTHONPATH=. venv/bin/python3 main_regular.py
+PYTHONPATH=. venv/bin/python3 main_yahoo_sponavi.py
+
+# Draft-Watch記事候補バッチ（毎朝cron）
+PYTHONPATH=. venv/bin/python3 main_draft_watch.py
+PYTHONPATH=. venv/bin/python3 main_draft_watch.py --regenerate          # 既存draft候補を再生成
+PYTHONPATH=. venv/bin/python3 main_draft_watch.py --regenerate-missing  # 本文未生成のみ
+```
+
+## 実行時の注意
+
+- Pythonは必ず `PYTHONPATH=. venv/bin/python3` で実行する。
+- **システムの `python3`/pyenv shim は使わない**（このサンドボックスでOOM kill されることがある）。
+- バルク編集を heredoc + python で回さない（同上）。ファイル編集は Edit/Write ツールで行う。
+
+## Phase 6: 選手候補の昇格案JSON作成ルール
+
+選手データ（成績・実績・description）を作るときは、**DBへ直接 INSERT/UPDATE しない**。必ず昇格案JSONを
+`output/promote_drafts/{candidate_id}.json` に出力する（取り込み・昇格は import-draft / commit に任せる）。
+詳細設計: `docs/phase6_player_promotion_design.md`。
+
+JSONルール:
+- **不明な値は推測せず `null`**。各 stats/achievement に `source_url` を必ず付ける。
+- 4サイト（一球速報 `baseball.omyutech.com` / `player.draft-kaigi.jp` / `draft-repo.com` / 球歴 `kyureki.com`）を優先しつつ、**広くリサーチして複数ソースでクロスチェック**。成績がソース間で食い違う場合は `notes` に差異と要確認点を記録する。
+- `description` は **DB内の関連記事（crawled_articles / scout_comments / attention_signals）を主役に、Webの記事・プロフィールも使って充実させる**（素材サイトは限定しない）。ただし外部記事をそのまま転載・言い換えせず独自に整理する。数値・評価の羅列にしない。出典は `sources` に残す。
+- `stats.season`: `spring` / `summer` / `fall`（英語）。`stats.tournament`: **必須**（リーグ名など。`null` にしない）。
+- `achievements.type`: `title` / `national_tournament` / `samurai_japan` のいずれか。
+- `rank`: 運営が手動設定するため **0 固定**（リサーチで埋めない）。
+- `declared`: プロ志望表明または**進路の記載がなければ `true`**、進学・社会人入りなど**プロ以外の進路が判明していれば `false`**。
+- player フィールドは players テーブルに対応（`positions`→`position` / `throws`→`throw` / `bats`→`bat` は昇格時にマッピング）。
+
+## ドキュメント
+
+- データパイプライン全体: `docs/data_pipeline_strategy.md`
+- DBスキーマ: `draft_watch_db.md`
+- Phase 6 詳細設計: `docs/phase6_player_promotion_design.md`
