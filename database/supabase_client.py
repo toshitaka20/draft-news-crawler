@@ -2118,6 +2118,8 @@ class SupabasePlayerPromotionStore:
         'at_bats', 'hits', 'home_runs', 'rbis', 'steals', 'avg', 'obp', 'slg', 'ops',
     ]
 
+    _VALID_SEASONS = {'spring', 'summer', 'fall'}  # stats.season は NOT NULL かつこの3値のみ
+
     _ACHIEVEMENT_FIELDS = ['type', 'year', 'tournament_name', 'result']
 
     # players はコード値で保持するため、JSON側の日本語表記を変換する
@@ -2158,6 +2160,31 @@ class SupabasePlayerPromotionStore:
         except Exception as e:
             print(f"[DB] player_candidates 一覧取得エラー: {e}")
             return []
+
+    def find_existing_player(self, name: Optional[str], draft_year: Optional[int] = None) -> Optional[str]:
+        """同一選手が既に players に存在するか調べ、あれば player_id を返す。
+        氏名はスペース等を除去して正規化照合する（手作業INSERT等との重複登録を防ぐ）。
+        """
+        if self.dummy_mode or self.supabase is None or not name:
+            return None
+        from utils import normalize_player_key
+        norm = normalize_player_key(name)
+        if not norm:
+            return None
+        prefix = norm[:2]  # 姓相当でゆるく絞ってから正規化照合
+        try:
+            res = self.supabase.table('players').select('id,name,draft_year').ilike('name', f'%{prefix}%').execute()
+            rows = res.data or []
+        except Exception as e:
+            print(f"[DB] players 重複チェックエラー: {e}")
+            return None
+        for r in rows:
+            if normalize_player_key(r.get('name') or '') != norm:
+                continue
+            if draft_year and r.get('draft_year') and r['draft_year'] != draft_year:
+                continue
+            return r['id']
+        return None
 
     def import_draft(self, payload: Dict[str, Any]) -> bool:
         """昇格案JSON を player_candidates.research_payload に保存し research_status='ready' にする。"""
@@ -2210,8 +2237,31 @@ class SupabasePlayerPromotionStore:
             print(f"[Promotion] research_payload が無い/不正のためスキップ: {candidate_id}")
             return None
 
+        player = payload['player']
+
+        # 0) 既存playerの重複チェック（手作業INSERT等との衝突防止＋氏名表記ゆれの名寄せ）
+        existing_id = self.find_existing_player(player.get('name'), player.get('draft_year'))
+        if existing_id:
+            print(f"[Promotion] 既存playerが見つかりました（新規INSERTは行いません）: player_id={existing_id}")
+            print(f"            candidate={candidate_id} を既存playerにリンクします（stats/achievementsは既存を尊重しスキップ）")
+            try:
+                self.supabase.rpc('promote_player_candidate_links', {
+                    'p_player_candidate_id': candidate_id,
+                    'p_player_id': existing_id,
+                }).execute()
+            except Exception as e:
+                print(f"[DB] promote_player_candidate_links エラー: {e}")
+            try:
+                self.supabase.table('player_candidates').update({
+                    'research_status': 'committed',
+                }).eq('id', candidate_id).execute()
+            except Exception as e:
+                print(f"[DB] research_status 更新エラー: {e}")
+            print(f"[Promotion] 既存playerへのリンク完了: candidate={candidate_id} → player={existing_id}")
+            return existing_id
+
         # 1) players へ INSERT（列マッピング・rank=0固定）
-        player_row = self._build_player_row(payload['player'])
+        player_row = self._build_player_row(player)
         try:
             res = self.supabase.table('players').insert(player_row).execute()
             player_id = (res.data or [{}])[0].get('id')
@@ -2274,12 +2324,18 @@ class SupabasePlayerPromotionStore:
 
     def _build_stats_rows(self, stats: List[Dict[str, Any]], player_id: str) -> List[Dict[str, Any]]:
         rows = []
+        skipped = 0
         for s in stats:
+            if s.get('season') not in self._VALID_SEASONS:
+                skipped += 1
+                continue
             row = {k: s[k] for k in self._STATS_FIELDS if s.get(k) is not None}
             if not row:
                 continue
             row['player_id'] = player_id
             rows.append(row)
+        if skipped:
+            print(f"[Promotion] season未指定/不正の stats を {skipped}件スキップ（season は spring/summer/fall 必須）")
         return rows
 
     def _build_achievement_rows(self, achievements: List[Dict[str, Any]], player_id: str) -> List[Dict[str, Any]]:

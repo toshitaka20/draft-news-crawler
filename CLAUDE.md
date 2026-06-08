@@ -37,11 +37,12 @@ JSONルール:
 - **不明な値は推測せず `null`**。各 stats/achievement に `source_url` を必ず付ける。
 - 4サイト（一球速報 `baseball.omyutech.com` / `player.draft-kaigi.jp` / `draft-repo.com` / 球歴 `kyureki.com`）を優先しつつ、**広くリサーチして複数ソースでクロスチェック**。成績がソース間で食い違う場合は `notes` に差異と要確認点を記録する。
 - `description` は **DB内の関連記事（crawled_articles / scout_comments / attention_signals）を主役に、Webの記事・プロフィールも使って充実させる**（素材サイトは限定しない）。ただし外部記事をそのまま転載・言い換えせず独自に整理する。数値・評価の羅列にしない。出典は `sources` に残す。
-- `stats.season`: `spring` / `summer` / `fall`（英語）。`stats.tournament`: **必須**（リーグ名など。`null` にしない）。
+- `stats.season`: `spring` / `summer` / `fall`（英語・DB側 NOT NULL）。**年度集計しか取れずseason別に分けられない成績は stats に入れない**（descriptionで触れる）。`stats.tournament`: **必須**（リーグ名など。`null` にしない）。投手成績と打撃成績を同年に両方持つ二刀流は `period`（"投手"/"打撃"）で行を分ける。
 - `achievements.type`: `title` / `national_tournament` / `samurai_japan` のいずれか。
 - `rank`: 運営が手動設定するため **0 固定**（リサーチで埋めない）。
 - `declared`: プロ志望表明または**進路の記載がなければ `true`**、進学・社会人入りなど**プロ以外の進路が判明していれば `false`**。
 - player フィールドは players テーブルに対応（`positions`→`position` / `throws`→`throw` / `bats`→`bat`）。値は**日本語で書いてOK**（commit時にコード変換する: category `大学`→`university` 等、throw/bat `右`→`R`/`左`→`L`/`両`→`S`、position は日本語のまま）。
+- commit時、同名（スペース除去で正規化）＋draft_yearで既存playerを照合し、存在すれば**新規作成せず既存playerにリンク**する（手作業INSERT等との重複登録防止・氏名表記ゆれの名寄せ）。
 
 ## ドキュメント
 
