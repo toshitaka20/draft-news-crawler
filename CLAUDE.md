@@ -37,7 +37,7 @@ JSONルール:
 - `achievements.type`: `title` / `national_tournament` / `samurai_japan` のいずれか。
 - `rank`: 運営が手動設定するため **0 固定**（リサーチで埋めない）。
 - `declared`: プロ志望表明または**進路の記載がなければ `true`**、進学・社会人入りなど**プロ以外の進路が判明していれば `false`**。
-- player フィールドは players テーブルに対応（`positions`→`position` / `throws`→`throw` / `bats`→`bat` は昇格時にマッピング）。
+- player フィールドは players テーブルに対応（`positions`→`position` / `throws`→`throw` / `bats`→`bat`）。値は**日本語で書いてOK**（commit時にコード変換する: category `大学`→`university` 等、throw/bat `右`→`R`/`左`→`L`/`両`→`S`、position は日本語のまま）。
 
 ## ドキュメント
 

@@ -2081,6 +2081,225 @@ INSERT INTO scout_comments (
         filename = f"scout_comments_resolved_{now_jst().strftime('%Y%m%d_%H%M%S')}.sql"
         return self.save_sql_file(sql_content, filename)
 
+class SupabasePlayerPromotionStore:
+    """選手候補のリサーチ付き昇格（Phase 6）。
+    リサーチ結果(promote_draft JSON)を player_candidates.research_payload に保存し（import_draft）、
+    確定後に players/stats/player_achievements を作成して昇格する（commit_promotion）。
+    詳細設計: docs/phase6_player_promotion_design.md
+    """
+
+    # 昇格案JSON の player 側キー -> players 列（名前違いを吸収）
+    _PLAYER_FIELD_MAP = {
+        'name': 'name',
+        'name_kana': 'name_kana',
+        'team': 'team',
+        'category': 'category',
+        'positions': 'position',   # _text
+        'throws': 'throw',
+        'bats': 'bat',
+        'height_cm': 'height_cm',
+        'weight_kg': 'weight_kg',
+        'fastball_max': 'fastball_max',
+        'breaking_balls': 'breaking_balls',
+        'long_throw_m': 'long_throw_m',
+        'fifty_m_time': 'fifty_m_time',
+        'prefecture': 'prefecture',
+        'draft_year': 'draft_year',
+        'declared': 'declared',
+        'bio': 'bio',
+        'description': 'description',
+    }
+
+    # stats へ展開する際に拾う列（payload stats のキー = stats 列名）
+    _STATS_FIELDS = [
+        'year', 'season', 'tournament', 'period', 'games',
+        'innings', 'era', 'strikeouts', 'strikeouts_per_9', 'whip', 'hits_allowed',
+        'batting_avg_against', 'earned_runs', 'walks',
+        'at_bats', 'hits', 'home_runs', 'rbis', 'steals', 'avg', 'obp', 'slg', 'ops',
+    ]
+
+    _ACHIEVEMENT_FIELDS = ['type', 'year', 'tournament_name', 'result']
+
+    # players はコード値で保持するため、JSON側の日本語表記を変換する
+    _CATEGORY_MAP = {'高校': 'high_school', '大学': 'university', '社会人': 'company', '独立リーグ': 'independent', '独立': 'independent'}
+    _THROWBAT_MAP = {'右': 'R', '左': 'L', '両': 'S', '両打': 'S', '右投': 'R', '左投': 'L'}
+
+    def __init__(self, dummy_mode: bool = False):
+        self.dummy_mode, self.supabase = _init_supabase_client(dummy_mode=dummy_mode)
+        if not self.dummy_mode:
+            print("✅ Supabaseクライアントを初期化しました（player_candidates 昇格）")
+
+    def fetch_candidate(self, candidate_id: str) -> Optional[Dict[str, Any]]:
+        if self.dummy_mode or self.supabase is None:
+            return None
+        try:
+            res = (
+                self.supabase.table('player_candidates')
+                .select('*').eq('id', candidate_id).limit(1).execute()
+            )
+            rows = res.data or []
+            return rows[0] if rows else None
+        except Exception as e:
+            print(f"[DB] player_candidates 取得エラー: {e}")
+            return None
+
+    def import_draft(self, payload: Dict[str, Any]) -> bool:
+        """昇格案JSON を player_candidates.research_payload に保存し research_status='ready' にする。"""
+        candidate_id = (payload or {}).get('candidate_id')
+        if not candidate_id or str(candidate_id).startswith('<'):
+            print("[Promotion] candidate_id が未設定のためスキップ（payloadに実UUIDを入れてください）")
+            return False
+        if self.dummy_mode or self.supabase is None:
+            print(f"[Promotion] (dummy) import {candidate_id}")
+            return True
+
+        candidate = self.fetch_candidate(candidate_id)
+        if not candidate:
+            print(f"[Promotion] candidate が見つかりません: {candidate_id}")
+            return False
+        if candidate.get('status') == 'promoted' or candidate.get('research_status') == 'committed':
+            print(f"[Promotion] 既に昇格済みのためimportスキップ: {candidate_id}")
+            return False
+
+        try:
+            self.supabase.table('player_candidates').update({
+                'research_payload': payload,
+                'research_status': 'ready',
+                'researched_at': now_jst().isoformat(),
+            }).eq('id', candidate_id).execute()
+            print(f"[Promotion] import完了 → ready: {candidate_id}")
+            return True
+        except Exception as e:
+            print(f"[DB] research_payload 保存エラー: {e}")
+            return False
+
+    def commit_promotion(self, candidate_id: str) -> Optional[str]:
+        """ready の候補を players/stats/player_achievements に展開して昇格する。"""
+        if self.dummy_mode or self.supabase is None:
+            print(f"[Promotion] (dummy) commit {candidate_id}")
+            return None
+
+        candidate = self.fetch_candidate(candidate_id)
+        if not candidate:
+            print(f"[Promotion] candidate が見つかりません: {candidate_id}")
+            return None
+        if candidate.get('player_id') or candidate.get('status') == 'promoted' or candidate.get('research_status') == 'committed':
+            print(f"[Promotion] 既に昇格済みのためcommitスキップ: {candidate_id}")
+            return candidate.get('player_id')
+
+        payload = candidate.get('research_payload')
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        if not payload or not payload.get('player'):
+            print(f"[Promotion] research_payload が無い/不正のためスキップ: {candidate_id}")
+            return None
+
+        # 1) players へ INSERT（列マッピング・rank=0固定）
+        player_row = self._build_player_row(payload['player'])
+        try:
+            res = self.supabase.table('players').insert(player_row).execute()
+            player_id = (res.data or [{}])[0].get('id')
+        except Exception as e:
+            print(f"[DB] players INSERT エラー: {e}")
+            return None
+        if not player_id:
+            print(f"[Promotion] player_id 取得失敗: {candidate_id}")
+            return None
+
+        # 2) stats へ INSERT
+        stats_rows = self._build_stats_rows(payload.get('stats') or [], player_id)
+        if stats_rows:
+            try:
+                self.supabase.table('stats').insert(stats_rows).execute()
+            except Exception as e:
+                print(f"[DB] stats INSERT エラー: {e}")
+
+        # 3) player_achievements へ INSERT
+        ach_rows = self._build_achievement_rows(payload.get('achievements') or [], player_id)
+        if ach_rows:
+            try:
+                self.supabase.table('player_achievements').insert(ach_rows).execute()
+            except Exception as e:
+                print(f"[DB] player_achievements INSERT エラー: {e}")
+
+        # 4) リンク伝播（scout_comments/attention_signals/scout_visits の player_id 更新＋candidate.status='promoted'）
+        try:
+            self.supabase.rpc('promote_player_candidate_links', {
+                'p_player_candidate_id': candidate_id,
+                'p_player_id': player_id,
+            }).execute()
+        except Exception as e:
+            print(f"[DB] promote_player_candidate_links エラー: {e}")
+
+        # 5) research_status='committed'
+        try:
+            self.supabase.table('player_candidates').update({
+                'research_status': 'committed',
+            }).eq('id', candidate_id).execute()
+        except Exception as e:
+            print(f"[DB] research_status 更新エラー: {e}")
+
+        print(f"[Promotion] commit完了: candidate={candidate_id} → player={player_id}")
+        return player_id
+
+    def _build_player_row(self, player: Dict[str, Any]) -> Dict[str, Any]:
+        row: Dict[str, Any] = {}
+        for src_key, dst_col in self._PLAYER_FIELD_MAP.items():
+            value = player.get(src_key)
+            if value is None:
+                continue
+            if src_key == 'category':
+                value = self._CATEGORY_MAP.get(value, value)
+            elif src_key in ('throws', 'bats'):
+                value = self._THROWBAT_MAP.get(value, value)
+            row[dst_col] = value
+        row['rank'] = 0  # 運営が手動設定。リサーチ値は使わない
+        return row
+
+    def _build_stats_rows(self, stats: List[Dict[str, Any]], player_id: str) -> List[Dict[str, Any]]:
+        rows = []
+        for s in stats:
+            row = {k: s[k] for k in self._STATS_FIELDS if s.get(k) is not None}
+            if not row:
+                continue
+            row['player_id'] = player_id
+            rows.append(row)
+        return rows
+
+    def _build_achievement_rows(self, achievements: List[Dict[str, Any]], player_id: str) -> List[Dict[str, Any]]:
+        rows = []
+        for a in achievements:
+            row = {k: a[k] for k in self._ACHIEVEMENT_FIELDS if a.get(k) is not None}
+            if not row:
+                continue
+            row['player_id'] = player_id
+            rows.append(row)
+        return rows
+
+
+def import_player_promotion_draft(payload: Dict[str, Any], dummy_mode: bool = False) -> bool:
+    """昇格案JSON(payload) を player_candidates に取り込む（Phase 6 import-draft）。"""
+    store = SupabasePlayerPromotionStore(dummy_mode=dummy_mode)
+    return store.import_draft(payload)
+
+
+def commit_player_promotions(candidate_ids: List[str], dummy_mode: bool = False) -> Dict[str, int]:
+    """ready の候補を players/stats/player_achievements に展開して昇格する（Phase 6 commit）。"""
+    store = SupabasePlayerPromotionStore(dummy_mode=dummy_mode)
+    stats = {'committed': 0, 'skipped': 0, 'errors': 0}
+    for cid in candidate_ids:
+        try:
+            player_id = store.commit_promotion(cid)
+            if player_id:
+                stats['committed'] += 1
+            else:
+                stats['skipped'] += 1
+        except Exception as e:
+            print(f"[Promotion] commitエラー {cid}: {e}")
+            stats['errors'] += 1
+    return stats
+
+
 def generate_scout_comment_sql_with_resolved_ids(scout_rows: List[List[str]], dummy_mode: bool = False) -> str:
     """選手ID解決済みのスカウトコメントSQLを生成（簡易版）"""
     generator = SupabaseScoutCommentGenerator(dummy_mode=dummy_mode)

@@ -71,71 +71,84 @@
 
 ---
 
-## 4. スキーマ差分（`player_candidates` を `players` ミラーに拡張）
+## 4. スキーマ差分（C案：`research_payload` jsonb 1列）
 
-`players` と項目を揃え、昇格時のマッピングを 1対1 にする。`stats`/`player_achievements` は 1対多のため、提案段階では jsonb 列で保持し、昇格時に各テーブルへ展開する。
+`player_candidates` を `players` ミラーに拡張せず、昇格案JSONを **`research_payload`（jsonb）に丸ごと保存**する。これで players を汚さず（公開フラグ新設・別リポ全クエリ改修が不要）、candidateへの大量列追加も避けられる。stats/achievements の 1対多も payload 内の配列で表現し、commit 時に各テーブルへ展開する。
+
+実装SQL: `database/schema_phase6_player_candidates_promotion.sql`
 
 ```sql
--- database/schema_phase6_player_candidates_promotion.sql
-
--- 4-1. players に合わせて追加する列（リサーチ値の格納先）
 alter table public.player_candidates
-  add column if not exists breaking_balls text[],      -- 球種
-  add column if not exists long_throw_m   int4,        -- 遠投(m)
-  add column if not exists fifty_m_time   numeric,     -- 50m走(秒)
-  add column if not exists career         text[],      -- 経歴
-  add column if not exists bio            text,        -- 経歴文（descriptionとは別枠）
-  add column if not exists prefecture     text,        -- 出身都道府県
-  add column if not exists rank           int4,        -- 評価ランク（運営が手動設定。リサーチでは埋めず昇格時は0）
-  add column if not exists youtube_urls   text[],      -- 動画URL
-  add column if not exists declared       bool;        -- ドラフト志望届の有無
+  add column if not exists research_payload jsonb,                        -- 昇格案JSON（後述の promote_draft 形）
+  add column if not exists research_status  text not null default 'none', -- none/queued/researching/ready/committed/failed
+  add column if not exists researched_at    timestamptz;
 
--- 4-2. リサーチ管理列
-alter table public.player_candidates
-  add column if not exists research_status       text not null default 'none',
-  add column if not exists researched_at         timestamptz,
-  add column if not exists research_sources       jsonb,  -- フィールド別の出典 {field:{value,provider,url}}
-  add column if not exists research_stats         jsonb,  -- stats提案（配列）
-  add column if not exists research_achievements  jsonb,  -- achievements提案（配列）
-  add column if not exists research_raw           jsonb;  -- 4サイトの生構造化結果（再マージ・検証用）
-
-alter table public.player_candidates
-  add constraint player_candidates_research_status_check
-  check (research_status in ('none','queued','researching','ready','committed','failed'));
+do $$
+begin
+  alter table public.player_candidates
+    add constraint player_candidates_research_status_check
+    check (research_status in ('none','queued','researching','ready','committed','failed'));
+exception when duplicate_object then null;
+end $$;
 
 create index if not exists idx_player_candidates_research_status
   on public.player_candidates (research_status);
 ```
 
-### 名前違いの吸収（昇格時マッピング）
-candidate 側の列名は維持し、`players` への INSERT 時に対応付ける。
+### promote_draft JSON スキーマ（`research_payload` の中身）
+import-draft が取り込み、commit がこれを展開する正規形。例: `output/promote_drafts/example_matoba_riku.json`。
 
-| player_candidates | players |
-|---|---|
-| `positions` (`_text`) | `position` (`_text`) |
-| `throws` (`text`) | `throw` (`text`) |
-| `bats` (`text`) | `bat` (`text`) |
-| `name_kana`/`team`/`category`/`draft_year`/`height_cm`/`weight_kg`/`fastball_max`/`description` | 同名 |
-| `breaking_balls`/`long_throw_m`/`fifty_m_time`/`career`/`bio`/`prefecture`/`rank`/`youtube_urls`/`declared` | 同名 |
-| `birth_date` | （playersに無い→使わない。年齢推定の参考のみ） |
-
-### jsonb の形
 ```jsonc
-// research_stats（昇格時に stats テーブルへ展開）
-[
-  { "year": 2025, "season": "春", "tournament": "全日本大学選手権", "period": "リーグ戦",
-    "games": 12, "innings": 80.1, "era": 1.45, "strikeouts": 95, "whip": 0.98,
-    "source_url": "https://baseball.omyutech.com/...", "provider": "ikkyu" }
-]
-// research_achievements（昇格時に player_achievements へ展開）
-[
-  { "type": "全国大会", "year": 2024, "tournament_name": "明治神宮大会", "result": "ベスト4",
-    "source_url": "https://...", "provider": "draft_kaigi" }
-]
-// research_sources（採用値ごとの出典）
-{ "fastball_max": {"value":151,"provider":"draft_kaigi","url":"https://..."},
-  "era_2025":    {"value":1.45,"provider":"ikkyu","url":"https://..."} }
+{
+  "candidate_id": "<player_candidates の UUID>",
+  "player": {
+    "name": "...", "name_kana": "...", "team": "...", "category": "大学",
+    "positions": ["投手"], "throws": "右", "bats": "右",
+    "height_cm": 186, "weight_kg": 71, "fastball_max": 148,
+    "breaking_balls": ["スライダー", "フォーク"],
+    "long_throw_m": null, "fifty_m_time": null, "prefecture": "大阪府",
+    "draft_year": 2026, "declared": true, "rank": 0,
+    "bio": "...", "description": "..."
+  },
+  "stats": [
+    { "year": 2026, "season": "spring", "tournament": "阪神大学野球リーグ",
+      "games": 7, "innings": 45.1, "era": 0.99, "strikeouts": 44,
+      "source_url": "https://...", "provider": "draft_repo" }
+  ],
+  "achievements": [
+    { "type": "national_tournament", "year": 2024, "tournament_name": "明治神宮大会",
+      "result": "2回戦で7回1失点", "source_url": "https://...", "provider": "draft_repo" }
+  ],
+  "sources": [ { "title": "...", "url": "https://...", "provider": "draft_repo" } ],
+  "notes": "ソース間差異や要レビュー事項をここに記録"
+}
 ```
+
+JSON項目ルール（`CLAUDE.md` と同期）:
+- 不明値は推測せず `null`。各 stats/achievement に `source_url` を付ける。
+- `stats.season`: `spring`/`summer`/`fall`（英語）。`stats.tournament`: 必須（リーグ名など。`null`にしない）。
+- `achievements.type`: `title` / `national_tournament` / `samurai_japan`。
+- `rank`: 運営が手動設定。リサーチでは埋めず commit 時に **0 固定**。
+- `declared`: プロ志望表明または進路の記載がなければ `true`、プロ以外の進路が判明していれば `false`。
+- 4サイト優先＋広くリサーチし、成績はソース間クロスチェック。差異は `notes` に残す。
+
+### 名前違いの吸収（commit 時の players へのマッピング）
+`SupabasePlayerPromotionStore._PLAYER_FIELD_MAP` で対応付ける。
+
+| promote_draft.player | players |
+|---|---|
+| `positions` | `position` (`_text`) |
+| `throws` | `throw` |
+| `bats` | `bat` |
+| `name`/`name_kana`/`team`/`category`/`draft_year`/`height_cm`/`weight_kg`/`fastball_max`/`breaking_balls`/`long_throw_m`/`fifty_m_time`/`prefecture`/`bio`/`description`/`declared` | 同名 |
+| `rank` | commit時に **0 固定**（payload値は無視） |
+
+値の変換（commit時に `SupabasePlayerPromotionStore` が吸収。JSONは人が読みやすい日本語で書いてよい）:
+- `category`: `高校`→`high_school` / `大学`→`university` / `社会人`→`company` / `独立リーグ`→`independent`
+- `throws`/`bats`: `右`→`R` / `左`→`L` / `両`→`S`
+- `position` は日本語のまま（players も `外野手`/`投手` 等の日本語表記）
+
+stats/achievements は payload の各配列を、stats列・player_achievements列（`type`/`year`/`tournament_name`/`result`）にマップして `player_id` を付与しINSERT（出典は payload 側に残す。stats本体には出典列が無いため）。
 
 ---
 
