@@ -1719,13 +1719,28 @@ class SupabaseDraftWatchCandidateStore:
                 'role': s.get('role'),
             })
 
+        main_player_obj = None
+        if main_player_name:
+            main_player_obj = {'name': main_player_name, 'team': main_player_team, 'positions': main_player_positions}
+            mp_id = candidate.get('main_player_id')
+            if mp_id and not self.dummy_mode and self.supabase is not None:
+                try:
+                    prow = (
+                        self.supabase.table('players')
+                        .select('height_cm,weight_kg,throw,bat,fastball_max,breaking_balls,career,prefecture,draft_year,description,bio')
+                        .eq('id', mp_id).single().execute()
+                    ).data
+                    if prow:
+                        for k, v in prow.items():
+                            if v is not None:
+                                main_player_obj[k] = v
+                except Exception as e:
+                    print(f"[DraftWatch] main_player基本情報取得エラー: {e}")
+
         summary_json = {
             'topic_type': topic_type,
             'topic_key': candidate.get('topic_key'),
-            'main_player': (
-                {'name': main_player_name, 'team': main_player_team, 'positions': main_player_positions}
-                if main_player_name else None
-            ),
+            'main_player': main_player_obj,
             'attention': {
                 'team_count': team_count,
                 'person_count': person_count,
