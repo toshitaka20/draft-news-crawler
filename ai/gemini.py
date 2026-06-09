@@ -586,7 +586,13 @@ def generate_draft_watch_article_with_gemini(summary_json: Dict[str, Any]) -> Op
      - 断定的な評論で締めくくらず、今後の展開を示唆する書き方にする。
      - 「～ことになりそうだ」「～注目が集まる」のように期待・予測を示す形、または会議・視察の事実を淡々と提示して読者の関心を持続させる形のどちらかを、データの性質に合わせて選ぶ。
 
-  6. 出典一覧（`## 出典` という見出しを付ける）
+  6. 選手プロフィール（`## 選手プロフィール` という見出しを付ける）※ main_player に基本情報がある場合のみ
+     - main_player の基本情報のうち存在する項目を箇条書きで掲載する。例: 身長(height_cm)・体重(weight_kg)・投打(throw/bat)・最速球速(fastball_max)・球種(breaking_balls)・出身校/経歴(career)・出身地(prefecture)・ドラフト対象年(draft_year)。
+       例: 「- 身長／体重: 186cm／71kg」「- 投打: 右投左打」「- 最速: 148キロ」「- 球種: スライダー、フォーク」「- 経歴: 大阪電通大高→天理大」。
+     - main_player に description があれば、箇条書きの下に紹介文として1段落で載せる。
+     - main_player が name/team/positions 程度しか持たず基本情報・descriptionが無い場合は、このセクションごと省略する。
+
+  7. 出典一覧（`## 出典` という見出しを付ける）
      - その下に summary_json の sources 配列の要素「だけ」を、Markdownリンク形式「- [媒体名] [タイトル](URL)」で列挙する（各要素の url を使って必ずリンクにする。媒体名は source、タイトルは title を使う）。
      - url が無い要素のみリンクにせず「- [媒体名] タイトル」とする。
      - sources に含まれない情報（eventsの本文や推測など）を出典として加えない。sources が1件なら出典も1行にする。
