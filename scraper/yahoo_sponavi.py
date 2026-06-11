@@ -221,32 +221,73 @@ class YahooSponaviScraper:
             print(f"[ERROR] 記事アイテム解析エラー: {e}")
             return None
     
+    # 複数ページ記事の取得上限（暴走防止のセーフティ）
+    MAX_ARTICLE_PAGES = 10
+
     def fetch_article_content(self, article_url: str) -> tuple:
         """
-        記事の詳細内容を取得
+        記事の詳細内容を取得（Yahoo!ニュースの複数ページ記事 ?page=2.. にも対応）。
         """
         try:
-            print(f"[DEBUG] 記事詳細取得: {article_url}")
-            
-            response = self.session.get(article_url, timeout=REQUEST_TIMEOUT)
+            # 既に ?page= が付いていても1ページ目から取り直すため、クエリを落とした基準URLを使う。
+            base_url = article_url.split('?')[0]
+            print(f"[DEBUG] 記事詳細取得: {base_url}")
+
+            response = self.session.get(base_url, timeout=REQUEST_TIMEOUT)
             response.raise_for_status()
-            
+
             soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # タイトル取得
+
+            # タイトル・日付は1ページ目から取得
             title = self._extract_title(soup)
-            
-            # 日付取得
             date = self._extract_date(soup)
-            
-            # 本文取得
-            body = self._extract_body(soup)
-            
+
+            # 本文は全ページを連結
+            body_parts = []
+            first_body = self._extract_body(soup)
+            if first_body:
+                body_parts.append(first_body)
+
+            total_pages = self._detect_total_pages(soup, base_url)
+            for page in range(2, min(total_pages, self.MAX_ARTICLE_PAGES) + 1):
+                page_url = f"{base_url}?page={page}"
+                try:
+                    time.sleep(0.5)  # ページ送りの取得間隔
+                    resp = self.session.get(page_url, timeout=REQUEST_TIMEOUT)
+                    if resp.status_code != 200:
+                        print(f"[DEBUG] page{page} 取得中断 status={resp.status_code}")
+                        break
+                    page_body = self._extract_body(BeautifulSoup(resp.text, 'html.parser'))
+                    if page_body:
+                        body_parts.append(page_body)
+                        print(f"[DEBUG] page{page} 本文連結: {len(page_body)}文字")
+                except Exception as pe:
+                    print(f"[WARN] page{page} 取得失敗 {page_url}: {pe}")
+                    break
+
+            body = '\n'.join(body_parts)
+            if total_pages > 1:
+                print(f"[DEBUG] 複数ページ記事を連結: {total_pages}ページ / 合計{len(body)}文字")
+
             return title, date, body
-            
+
         except Exception as e:
             print(f"[ERROR] 記事詳細取得エラー {article_url}: {e}")
             return '', '', ''
+
+    def _detect_total_pages(self, soup: BeautifulSoup, base_url: str) -> int:
+        """
+        記事ページャ（<a href="/articles/{id}?page=N">）から総ページ数を検出する。
+        ページャが無ければ1を返す。
+        """
+        article_id = base_url.rstrip('/').split('/')[-1]
+        max_page = 1
+        pattern = re.compile(r'/articles/' + re.escape(article_id) + r'\?page=(\d+)')
+        for a in soup.find_all('a', href=True):
+            m = pattern.search(a['href'])
+            if m:
+                max_page = max(max_page, int(m.group(1)))
+        return max_page
     
     def _extract_title(self, soup: BeautifulSoup) -> str:
         """記事タイトルを抽出（Yahoo!ニュース専用）"""
