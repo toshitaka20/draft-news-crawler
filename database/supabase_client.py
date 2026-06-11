@@ -2135,9 +2135,12 @@ class SupabasePlayerPromotionStore:
     # stats へ展開する際に拾う列（payload stats のキー = stats 列名）
     _STATS_FIELDS = [
         'year', 'season', 'tournament', 'games',
+        # 投手内訳（防御率・WHIPはアプリが内訳から再計算する）
         'innings', 'era', 'strikeouts', 'strikeouts_per_9', 'whip', 'hits_allowed',
-        'batting_avg_against', 'earned_runs', 'walks',
-        'at_bats', 'hits', 'home_runs', 'rbis', 'steals', 'avg', 'obp', 'slg', 'ops',
+        'batting_avg_against', 'earned_runs', 'walks', 'hit_by_pitch', 'walks_plus_hit_by_pitch',
+        # 打撃内訳（出塁率・長打率・OPSはアプリが内訳から再計算する）
+        'at_bats', 'hits', 'doubles', 'triples', 'home_runs', 'rbis', 'steals',
+        'sacrifice_flies', 'batter_strikeouts', 'avg', 'obp', 'slg', 'ops',
     ]
 
     _VALID_SEASONS = {'spring', 'summer', 'fall'}  # stats.season は NOT NULL かつこの3値のみ
