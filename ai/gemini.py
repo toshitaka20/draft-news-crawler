@@ -527,6 +527,32 @@ def process_scout_visits_with_ai(articles: List[Dict[str, Any]]) -> List[Dict[st
     return processed_articles
 
 
+def _linkify_main_player(markdown: str, summary_json: Dict[str, Any]) -> str:
+    """
+    生成記事中の main_player 名を Draft-Watch の選手ページへのMarkdownリンクにする（初出1回）。
+    モデルがリンク指示を無視しても確実にリンク化するための後処理。
+    main_player に draft_watch_url が無い場合は何もしない。
+    """
+    mp = (summary_json or {}).get('main_player') or {}
+    name = (mp.get('name') or '').strip()
+    url = (mp.get('draft_watch_url') or '').strip()
+    if not name or not url or not markdown:
+        return markdown
+    if f']({url})' in markdown:  # 既にリンク済みなら何もしない
+        return markdown
+    # 氏名のスペース有無ゆれに対応（保存名「木口 永翔」と本文「木口永翔」など）。先に長い表記を試す。
+    forms = sorted({name, name.replace(' ', '').replace('　', '')}, key=len, reverse=True)
+    for form in forms:
+        if not form:
+            continue
+        # 既存リンクの一部（前が「[」/ 後が「]」「(」）は避け、最初の素の出現のみリンク化する。
+        pattern = re.compile(r'(?<!\[)' + re.escape(form) + r'(?!\]|\()')
+        new_markdown, n = pattern.subn(f'[{form}]({url})', markdown, count=1)
+        if n:
+            return new_markdown
+    return markdown
+
+
 def generate_draft_watch_article_with_gemini(summary_json: Dict[str, Any]) -> Optional[Dict[str, str]]:
     """
     summary_json（複数ソースから整理済みの構造化データ）からDraft-Watch下書き記事を生成する。
@@ -543,6 +569,8 @@ def generate_draft_watch_article_with_gemini(summary_json: Dict[str, Any]) -> Op
 【厳守事項】
 - 外部記事の文章をそのまま転載・言い換えしない。素材を整理し直した独自の記事にする。
 - 構造化データに含まれない情報を推測・創作しない（不明な点は無理に書かない）。
+- スカウトコメントが無い場合でも、その不在に言及しない。「スカウトの評価コメントはなかった」「スカウトコメントは確認できなかった」「コメントは見られなかった」のような“無い”ことを述べる文・断り書きは一切書かず、該当箇所やセクションを単に省略する。
+- 選手名のリンク化: summary_json の main_player に `draft_watch_url` がある場合、本文（リード文・本記）で当該選手名が最初に登場する箇所と、選手プロフィール見出し直後の表記で、選手名を Markdownリンク `[選手名](draft_watch_url)` にする。`draft_watch_url` が無い選手はリンクにしない（URLを推測・創作しない）。
 - 記事は必ず Markdown の見出し（##）を使って構造化する。プレーンテキストの段落だけを並べてはいけない。
   ドラフト専門メディアでよく見られる、次の構成・文体を踏襲する:
 
@@ -627,6 +655,7 @@ JSONオブジェクトのみを返してください。説明文、Markdownの�
         if not title or not markdown:
             return None
 
+        markdown = _linkify_main_player(markdown, summary_json)
         return {'title': title, 'markdown': markdown}
 
     except Exception as e:

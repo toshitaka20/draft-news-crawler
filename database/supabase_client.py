@@ -1773,6 +1773,11 @@ class SupabaseDraftWatchCandidateStore:
                         for k, v in prow.items():
                             if v is not None:
                                 main_player_obj[k] = v
+                        # 登録選手はDraft-Watchの選手ページURLを付与（記事内で選手名をリンク化するため）。
+                        main_player_obj['id'] = mp_id
+                        dy = main_player_obj.get('draft_year')
+                        if dy:
+                            main_player_obj['draft_watch_url'] = f"https://draft-watch.com/players/{dy}/{mp_id}"
                 except Exception as e:
                     print(f"[DraftWatch] main_player基本情報取得エラー: {e}")
 
