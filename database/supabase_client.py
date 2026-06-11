@@ -1068,30 +1068,48 @@ class SupabaseScoutVisitStore:
     def _format_published_at(date_value: Any) -> Optional[str]:
         return SupabaseCrawledArticleStore._format_published_at(str(date_value or ''))
 
-    def _get_existing_keys(self, source_urls: List[str]) -> Set[Tuple[str, str, str, str]]:
-        if self.dummy_mode or self.supabase is None or not source_urls:
-            return set()
+    @staticmethod
+    def visit_dedup_key(player_id: Optional[str], player_candidate_id: Optional[str],
+                        player_name: Optional[str], team_key: Optional[str],
+                        event_date: Optional[str]) -> Tuple[str, str, str]:
+        """
+        視察の同一性キー（source非依存）。同一選手×同一球団×同一日（不明なら日なし）の視察は
+        Yahoo転載と元記事で別レコードにせず1件に名寄せする。選手参照は player_id > candidate > 氏名。
+        """
+        from utils import normalize_player_key
+        ref = (player_id or '').strip() or ('c:' + player_candidate_id if player_candidate_id else '') \
+            or ('n:' + (normalize_player_key(player_name) or ''))
+        return (ref, (team_key or '').strip(), (event_date or '').strip())
 
+    def _get_existing_visit_keys(self, player_ids: List[str], candidate_ids: List[str],
+                                 player_names: List[str]) -> Tuple[Set[Tuple[str, str, str]], Set[Tuple[str, str]]]:
+        """
+        対象選手に紐づく既存視察から、(1) source非依存キー集合と
+        (2) 日付ありの (選手, 球団) ペア集合を取得する。
+        """
+        keys: Set[Tuple[str, str, str]] = set()
+        dated_pairs: Set[Tuple[str, str]] = set()
+        if self.dummy_mode or self.supabase is None:
+            return keys, dated_pairs
+        cols = 'player_id,player_candidate_id,player_name,team_key,event_date'
         try:
-            response = (
-                self.supabase
-                .table('scout_visits')
-                .select('source_url,evidence_hash,team_key,player_name')
-                .in_('source_url', sorted(set(source_urls)))
-                .execute()
-            )
-            return {
-                (
-                    row.get('source_url') or '',
-                    row.get('evidence_hash') or '',
-                    row.get('team_key') or '',
-                    row.get('player_name') or '',
-                )
-                for row in (response.data or [])
-            }
+            for field, values in (('player_id', player_ids),
+                                  ('player_candidate_id', candidate_ids),
+                                  ('player_name', player_names)):
+                vals = sorted({v for v in values if v})
+                if not vals:
+                    continue
+                resp = self.supabase.table('scout_visits').select(cols).in_(field, vals).execute()
+                for row in (resp.data or []):
+                    ref, team, date = self.visit_dedup_key(
+                        row.get('player_id'), row.get('player_candidate_id'),
+                        row.get('player_name'), row.get('team_key'), row.get('event_date'))
+                    keys.add((ref, team, date))
+                    if team and date:
+                        dated_pairs.add((ref, team))
         except Exception as e:
             print(f"[DB] scout_visits 既存取得エラー: {e}")
-            return set()
+        return keys, dated_pairs
 
     def insert_scout_visits(self, articles: List[Dict[str, Any]]) -> Dict[str, int]:
         rows = []
@@ -1107,12 +1125,24 @@ class SupabaseScoutVisitStore:
 
         source_urls = [row.get('source_url') for row in rows if row.get('source_url')]
         crawled_id_map = SupabaseCrawledArticleStore(dummy_mode=False).get_article_id_map_by_urls(source_urls)
-        existing_keys = self._get_existing_keys(source_urls)
         attention_store = SupabaseAttentionSignalStore(dummy_mode=False)
         player_link_map = attention_store._get_player_links_by_source_urls(source_urls)
 
+        # 対象選手に紐づく既存視察を source非依存キーで取得（Yahoo転載と元記事の重複を排除）
+        link_pids, link_cids, link_names = [], [], []
+        for row in rows:
+            link = player_link_map.get(self._to_optional_str(row.get('source_url')) or '', {})
+            if link.get('player_id'):
+                link_pids.append(link['player_id'])
+            if link.get('player_candidate_id'):
+                link_cids.append(link['player_candidate_id'])
+            name = link.get('player_name') or self._to_optional_str(row.get('player_name'))
+            if name:
+                link_names.append(name)
+        existing_keys, dated_pairs = self._get_existing_visit_keys(link_pids, link_cids, link_names)
+
         records = []
-        seen_keys: Set[Tuple[str, str, str, str]] = set()
+        seen_keys: Set[Tuple[str, str, str]] = set()
         duplicates = 0
 
         for row in rows:
@@ -1123,14 +1153,21 @@ class SupabaseScoutVisitStore:
 
             team_key = self._to_optional_str(row.get('team_key'))
             player_name = self._to_optional_str(row.get('player_name'))
-            evidence_hash = hashlib.md5(evidence.encode('utf-8')).hexdigest()
-            key = (source_url, evidence_hash, team_key or '', player_name or '')
+            player_link = player_link_map.get(source_url, {})
+            event_date = self._to_optional_str(row.get('event_date'))
+            key = self.visit_dedup_key(
+                player_link.get('player_id'), player_link.get('player_candidate_id'),
+                player_link.get('player_name') or player_name, team_key, event_date)
+            ref, tkey, date = key
+            # 同キー重複、または「日付なし視察＝同一選手×球団に日付あり視察が既にある」場合は重複扱い。
             if key in seen_keys or key in existing_keys:
+                duplicates += 1
+                continue
+            if not date and tkey and (ref, tkey) in dated_pairs:
                 duplicates += 1
                 continue
             seen_keys.add(key)
 
-            player_link = player_link_map.get(source_url, {})
             records.append({
                 'crawled_article_id': crawled_id_map.get(source_url),
                 'player_id': player_link.get('player_id'),

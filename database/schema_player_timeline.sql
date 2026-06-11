@@ -5,42 +5,64 @@
 create or replace view public.player_timeline_items
 with (security_invoker = true)
 as
-select
-  pc.player_id,
-  pc.id as player_candidate_id,
-  pcs.crawled_article_id,
-  pcs.source_url,
-  coalesce(pcs.source_title, ca.title) as title,
-  coalesce(pcs.published_at, ca.published_at) as published_at,
-  coalesce(pcs.source, ca.source) as source,
-  coalesce(pcs.category, ca.category) as category,
-  'candidate'::text as item_type,
-  pcs.evidence as body,
-  pcs.confidence as confidence,
-  null::integer as score,
-  pcs.created_at
-from public.player_candidate_sources pcs
-join public.player_candidates pc on pc.id = pcs.player_candidate_id
-left join public.crawled_articles ca on ca.id = pcs.crawled_article_id
+-- ニュース記事項目（候補根拠 + 登録選手根拠）は、同一ニュースをYahooと元媒体が報じて重複する。
+-- 同一選手×正規化タイトル単位で1件に絞り、元媒体（非Yahoo）を優先して残す。
+with news_items as (
+  select
+    pc.player_id,
+    pc.id as player_candidate_id,
+    pcs.crawled_article_id,
+    pcs.source_url,
+    coalesce(pcs.source_title, ca.title) as title,
+    coalesce(pcs.published_at, ca.published_at) as published_at,
+    coalesce(pcs.source, ca.source) as source,
+    coalesce(pcs.category, ca.category) as category,
+    'candidate'::text as item_type,
+    pcs.evidence as body,
+    pcs.confidence as confidence,
+    null::integer as score,
+    pcs.created_at
+  from public.player_candidate_sources pcs
+  join public.player_candidates pc on pc.id = pcs.player_candidate_id
+  left join public.crawled_articles ca on ca.id = pcs.crawled_article_id
 
-union all
+  union all
 
+  select
+    pas.player_id,
+    null::uuid as player_candidate_id,
+    pas.crawled_article_id,
+    pas.source_url,
+    coalesce(pas.source_title, ca.title) as title,
+    coalesce(pas.published_at, ca.published_at) as published_at,
+    coalesce(pas.source, ca.source) as source,
+    coalesce(pas.category, ca.category) as category,
+    'player_article'::text as item_type,
+    pas.evidence as body,
+    pas.confidence as confidence,
+    null::integer as score,
+    pas.created_at
+  from public.player_article_sources pas
+  left join public.crawled_articles ca on ca.id = pas.crawled_article_id
+),
+news_deduped as (
+  select *,
+    row_number() over (
+      partition by
+        player_id,
+        coalesce(nullif(lower(regexp_replace(coalesce(title, ''), '\s', '', 'g')), ''), source_url, crawled_article_id::text)
+      order by
+        case when source ilike 'Yahoo%' then 1 else 0 end,  -- 元媒体を優先しYahoo転載を後回し
+        published_at desc nulls last,
+        created_at
+    ) as rn
+  from news_items
+)
 select
-  pas.player_id,
-  null::uuid as player_candidate_id,
-  pas.crawled_article_id,
-  pas.source_url,
-  coalesce(pas.source_title, ca.title) as title,
-  coalesce(pas.published_at, ca.published_at) as published_at,
-  coalesce(pas.source, ca.source) as source,
-  coalesce(pas.category, ca.category) as category,
-  'player_article'::text as item_type,
-  pas.evidence as body,
-  pas.confidence as confidence,
-  null::integer as score,
-  pas.created_at
-from public.player_article_sources pas
-left join public.crawled_articles ca on ca.id = pas.crawled_article_id
+  player_id, player_candidate_id, crawled_article_id, source_url, title, published_at,
+  source, category, item_type, body, confidence, score, created_at
+from news_deduped
+where rn = 1
 
 union all
 
