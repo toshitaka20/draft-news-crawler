@@ -3,11 +3,102 @@
 """
 
 import re
+import unicodedata
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 import hashlib
 from difflib import SequenceMatcher
+
+# 旧字体・異体字 → 新字体（NFKCでは統一されないため明示変換する）。
+# 氏名・学校名の名寄せ（百合澤↔百合沢、國學院↔国学院 等）に使う。
+KYUJITAI_MAP = str.maketrans({
+    '澤': '沢', '邊': '辺', '邉': '辺', '髙': '高', '齋': '斎', '齊': '斉',
+    '國': '国', '學': '学', '濱': '浜', '廣': '広', '德': '徳', '瀨': '瀬',
+    '圓': '円', '萬': '万', '惠': '恵', '槇': '槙', '﨑': '崎', '嶋': '島',
+    '眞': '真', '會': '会', '櫻': '桜', '澁': '渋', '彅': '薙',
+})
+
+
+def _to_shinjitai(text: str) -> str:
+    """NFKC正規化 + 旧字体→新字体変換。"""
+    if not text:
+        return text
+    return unicodedata.normalize('NFKC', text).translate(KYUJITAI_MAP)
+
+
+# 学校名の略称・別表記 → 正式名（サフィックス正規化「大学→大」を施した後の形で定義）。
+# 観測された表記ゆれを中心に少数を手当てする（必要に応じて追記）。
+SCHOOL_ALIAS = {
+    '慶大': '慶應義塾大',
+    '関大': '関西大',
+    '大商大': '大阪商業大',
+    '北九州市大': '北九州市立大',
+    '日体大': '日本体育大',
+    '東日本国際大': '東日本国際大',
+    '近大': '近畿大',
+    '中大': '中央大',
+    '法大': '法政大',
+    '明大': '明治大',
+    '立大': '立教大',
+    '専大': '専修大',
+    '駒大': '駒澤大',
+    '東洋大': '東洋大',
+    '亜大': '亜細亜大',
+    '国学院大': '国学院大',
+}
+
+
+def normalize_comment_text(comment: Optional[str]) -> str:
+    """
+    スカウトコメントの表記を統一する。
+    - 前後の鉤括弧・引用符（「」『』""''）を除去（鉤括弧の有無を統一）
+    - 前後空白の除去・連続空白の単一化
+    Yahoo等の転載と元記事で「」有無だけ違うコメントを同一視できるようにする目的も兼ねる。
+    """
+    if not comment:
+        return ''
+    text = comment.strip()
+    text = re.sub(r'^[「『“”"\'\s]+', '', text)
+    text = re.sub(r'[」』“”"\'\s]+$', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+
+def comment_dedup_key(comment: Optional[str]) -> str:
+    """重複判定用にコメントを正規化した小文字キー（鉤括弧・空白を無視）。"""
+    return normalize_comment_text(comment).lower()
+
+
+def loose_comment_key(comment: Optional[str]) -> str:
+    """
+    緩い重複判定キー。句読点・記号・空白・鉤括弧をすべて除去し、文字（かな漢字英数）だけ残す。
+    末尾の「。」有無やYahoo転載時の体裁差で取りこぼさないようにする目的。
+    """
+    text = normalize_comment_text(comment).lower()
+    # 文字・数字（CJK含む）以外（句読点・記号・空白）をすべて除去。
+    return re.sub(r'[^0-9a-z぀-ヿ㐀-鿿ｦ-ﾟ]', '', text)
+
+
+def normalize_school_key(team_name: Optional[str]) -> Optional[str]:
+    """
+    学校・所属名を名寄せ用の決定的キーへ正規化する。
+    旧字体変換 → 空白除去 → サフィックス正規化（大学→大 / 高等学校・高校→高）→ 略称マップ。
+    例: 関西大学/関西大/関大 → 'かんさい…' ではなく '関西大'、慶應義塾大学/慶大 → '慶應義塾大'。
+    """
+    if not team_name:
+        return None
+    text = _to_shinjitai(team_name).strip()
+    text = re.sub(r'\s+', '', text)
+    if not text:
+        return None
+    # サフィックス正規化（長い表記から）。
+    text = re.sub(r'大學$', '大', text)
+    text = re.sub(r'大学$', '大', text)
+    text = re.sub(r'(高等学校|高校)$', '高', text)
+    # 略称・別表記を正式名へ寄せる。
+    text = SCHOOL_ALIAS.get(text, text)
+    return text.lower() or None
 
 def contains_keywords(text: str, keywords: List[str]) -> bool:
     """
@@ -126,7 +217,8 @@ def normalize_player_key(name: Optional[str]) -> Optional[str]:
     """
     if not name:
         return None
-    text = name.strip().replace('　', ' ')
+    # 旧字体・異体字を新字体へ寄せて表記ゆれを吸収（百合澤↔百合沢、高橋↔髙橋 等）。
+    text = _to_shinjitai(name).strip().replace('　', ' ')
     text = re.sub(r'\s+', '', text)
     text = re.sub(r'(選手|くん|君|さん)$', '', text)
     return text.lower() or None

@@ -515,13 +515,15 @@ class SupabasePlayerCandidateStore:
         return None
 
     @staticmethod
-    def _candidate_key(name: str, team: Optional[str], draft_year: Optional[int]) -> Tuple[str, str, int]:
-        # 氏名はスペース等を除去して正規化（「松山 哲」と「松山哲」を同一視し重複候補を防ぐ）。
-        # チーム名もスペースを除去（略称ゆれ＝慶應義塾大/慶大 は別問題で、昇格時に find_existing_player が名寄せ）。
-        from utils import normalize_player_key
-        nname = normalize_player_key(name or '')
-        nteam = re.sub(r'\s+', '', team or '')
-        return (nname, nteam, draft_year or 0)
+    def _candidate_key(name: str, team: Optional[str], draft_year: Optional[int] = None) -> Tuple[str, str]:
+        # 候補の同一性は「氏名 + 学校」で判定する（draft_year は属性扱いで、年がズレても同一人物に統合）。
+        # 氏名は旧字体・スペースを正規化（百合澤↔百合沢、「松山 哲」↔「松山哲」を同一視）。
+        # チーム名も学校名正規化で表記ゆれを吸収（関西大学/関西大/関大、慶應義塾大学/慶大 等を同一視）。
+        # draft_year 引数は呼び出し互換のため残すが、キーには含めない。
+        from utils import normalize_player_key, normalize_school_key
+        nname = normalize_player_key(name or '') or ''
+        nteam = normalize_school_key(team) or ''
+        return (nname, nteam)
 
     def _get_existing_candidates(self, rows: List[Dict[str, Any]]) -> Dict[Tuple[str, str, int], str]:
         if self.dummy_mode or self.supabase is None or not rows:
@@ -686,7 +688,7 @@ class SupabasePlayerCandidateStore:
 
         existing_candidates = self._get_existing_candidates([item[2] for item in candidate_inputs])
         candidate_records = []
-        seen_candidate_keys: Set[Tuple[str, str, int]] = set()
+        seen_candidate_keys: Set[Tuple[str, str]] = set()
         for key, _row, record in candidate_inputs:
             if key in existing_candidates or key in seen_candidate_keys:
                 duplicates += 1
@@ -1799,22 +1801,38 @@ class SupabaseScoutCommentInserter:
                     print("ダミーモードで動作します。")
                     self.dummy_mode = True
     
-    def check_duplicate_comment(self, comment: str, scout_name: str, team_name: str) -> bool:
-        """重複コメントをチェック"""
+    def check_duplicate_comment(self, comment: str, scout_name: str, team_name: str,
+                                player_id: Optional[str] = None,
+                                player_candidate_id: Optional[str] = None) -> bool:
+        """重複コメントをチェック（鉤括弧・空白を無視し、同一選手の同内容コメントを重複とみなす）。"""
         if self.dummy_mode:
             # ダミーモードでは重複チェックをスキップ
             return False
-        
+
+        from utils import loose_comment_key
         try:
-            # 同じコメント内容、スカウト名、球団名の組み合わせをチェック
-            response = self.supabase.table('scout_comments').select('id').eq('comment', comment).eq('scout_name', scout_name).eq('team_name', team_name).limit(1).execute()
-            
-            if response.data:
-                print(f"[重複検出] スカウト: {scout_name}, 球団: {team_name}")
-                return True
-            
+            # 同一選手（player_id / player_candidate_id）に紐づく既存コメントを取得し、
+            # 正規化キー（鉤括弧・空白無視）で突き合わせる。Yahoo転載と元記事の重複や
+            # 「」有無・スカウト名表記ゆれによる取りこぼしを防ぐ。
+            query = self.supabase.table('scout_comments').select('id,comment')
+            if player_id:
+                query = query.eq('player_id', player_id)
+            elif player_candidate_id:
+                query = query.eq('player_candidate_id', player_candidate_id)
+            else:
+                # 選手未特定のものは従来通り team_name で絞る（広く誤検出しないため）。
+                query = query.eq('team_name', team_name)
+            response = query.execute()
+
+            # 句読点・記号・空白を無視した緩いキーの完全一致で比較。末尾句点差・Yahoo転載の
+            # 体裁差を吸収する。部分一致は長文評価の別文・別スカウト発言を誤統合するため使わない。
+            target = loose_comment_key(comment)
+            for row in (response.data or []):
+                if target and loose_comment_key(row.get('comment')) == target:
+                    print(f"[重複検出] スカウト: {scout_name}, 球団: {team_name}")
+                    return True
             return False
-            
+
         except Exception as e:
             print(f"[重複チェックエラー] {e}")
             return False  # エラーの場合は重複としない
@@ -1880,14 +1898,20 @@ class SupabaseScoutCommentInserter:
             return True
         
         try:
-            # 重複チェック
+            from utils import normalize_comment_text
+            # 鉤括弧（「」）の有無を統一して保存する。
+            comment = normalize_comment_text(scout_data['comment'])
+
+            # 重複チェック（同一選手の同内容コメントを鉤括弧・空白無視で判定）
             if self.check_duplicate_comment(
-                scout_data['comment'], 
-                scout_data['scout_name'], 
-                scout_data['team_name']
+                comment,
+                scout_data['scout_name'],
+                scout_data['team_name'],
+                player_id=scout_data.get('player_id'),
+                player_candidate_id=scout_data.get('player_candidate_id'),
             ):
                 return False  # 重複の場合はINSERTしない
-            
+
             # INSERT実行
             insert_data = {
                 'player_id': scout_data.get('player_id'),
@@ -1895,7 +1919,7 @@ class SupabaseScoutCommentInserter:
                 'player_name': scout_data.get('player_name'),
                 'team_name': scout_data['team_name'],
                 'scout_name': scout_data['scout_name'],
-                'comment': scout_data['comment'],
+                'comment': comment,
                 'published_at': scout_data.get('published_at'),
                 'source_url': scout_data.get('source_url')
             }
