@@ -5,7 +5,7 @@ Yahoo!スポーツナビ専用記事収集・AIコメント抽出システム
 
 from typing import List, Dict, Any
 from scraper.yahoo_sponavi import YahooSponaviScraper
-from ai.gemini import process_articles_with_ai, process_player_candidates_with_ai, process_scout_visits_with_ai
+from ai.gemini import process_articles_with_ai, process_player_candidates_with_ai, process_scout_visits_with_ai, derive_scout_visits_from_comments
 from sheets.google_sheets import update_sheets, get_existing_urls_by_source
 from database.supabase_client import (
     get_existing_crawled_urls_by_source,
@@ -124,6 +124,8 @@ def main():
         # 6.5. 視察情報抽出（球団x選手の視察記録）
         print("\n4.5. 視察情報抽出中...")
         all_processed = process_scout_visits_with_ai(all_processed)
+        # スカウトコメントが付く＝その球団は視察している、として視察行を補完する
+        all_processed = derive_scout_visits_from_comments(all_processed)
         scout_visit_count = sum(len(a.get('scout_visit_rows', [])) for a in all_processed)
         print(f"視察情報抽出数: {scout_visit_count}件")
 

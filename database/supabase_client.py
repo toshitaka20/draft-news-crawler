@@ -1141,6 +1141,21 @@ class SupabaseScoutVisitStore:
                 link_names.append(name)
         existing_keys, dated_pairs = self._get_existing_visit_keys(link_pids, link_cids, link_names)
 
+        # 同一バッチ内の日付あり視察も「日付なし吸収」の対象にする。
+        # （スカウトコメント由来の日付なし視察が、別記事の日付あり視察と同一選手×球団なら重複扱いにする）
+        for row in rows:
+            source_url = self._to_optional_str(row.get('source_url'))
+            event_date = self._to_optional_str(row.get('event_date'))
+            if not source_url or not event_date:
+                continue
+            player_link = player_link_map.get(source_url, {})
+            ref, tkey, date = self.visit_dedup_key(
+                player_link.get('player_id'), player_link.get('player_candidate_id'),
+                player_link.get('player_name') or self._to_optional_str(row.get('player_name')),
+                self._to_optional_str(row.get('team_key')), event_date)
+            if date and tkey:
+                dated_pairs.add((ref, tkey))
+
         records = []
         seen_keys: Set[Tuple[str, str, str]] = set()
         duplicates = 0

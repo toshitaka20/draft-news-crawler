@@ -8,7 +8,7 @@ import json
 import re
 from typing import List, Dict, Any, Optional
 from config import GEMINI_API_KEY, GEMINI_MODEL
-from utils import normalize_team_key, ALL_NPB_TEAM_KEYS
+from utils import normalize_team_key, ALL_NPB_TEAM_KEYS, normalize_player_key
 
 def setup_gemini():
     """
@@ -525,6 +525,83 @@ def process_scout_visits_with_ai(articles: List[Dict[str, Any]]) -> List[Dict[st
 
     print(f"[DEBUG] has_attention_candidate=True の記事数: {visit_candidate_count}")
     return processed_articles
+
+
+# scout_comments.team_name の表記ゆれ（英語キー）→ NPB12球団 team_key の補正。
+_SCOUT_TEAM_KEY_ALIAS = {'seibu': 'lions'}
+
+
+def _scout_team_to_npb_key(scout_team: Optional[str]) -> Optional[str]:
+    """
+    スカウトコメントの球団表記（既に giants/hawks 等の team_key で格納されている）を
+    NPB12球団の team_key へ寄せる。other / MLB / 不明 / リーグ・代表単位は None を返す。
+    """
+    key = (scout_team or '').strip().lower()
+    key = _SCOUT_TEAM_KEY_ALIAS.get(key, key)
+    return key if key in ALL_NPB_TEAM_KEYS else None
+
+
+def derive_scout_visits_from_comments(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    スカウトコメントが付く＝その球団は必ずその選手を視察している、という前提で、
+    スカウトコメント(scout_rows)から視察行(scout_visit_rows)を補完する。
+
+    AI抽出の視察候補(has_attention_candidate)から漏れた記事でも、コメントの球団を
+    視察として記録することで取りこぼしを防ぐ。日付はコメントから確実には特定できないため
+    event_date=None（日付なし視察）とし、同一選手×同一球団に日付あり視察が別途あれば
+    insert時に名寄せ吸収される。球団が特定できないコメント(other/不明)は対象外。
+    """
+    derived_total = 0
+    for article in articles:
+        scout_rows = article.get('scout_rows', []) or []
+        if not scout_rows:
+            continue
+
+        visit_rows = article.get('scout_visit_rows', [])
+        # 同記事内で既に視察行がある (player_key, team_key) は重複させない
+        existing_pairs = set()
+        for vr in visit_rows:
+            existing_pairs.add((normalize_player_key(vr.get('player_name')), vr.get('team_key')))
+
+        for row in scout_rows:
+            if len(row) < 7:
+                continue
+            player_name = (row[0] or '').strip()
+            scout_team = (row[3] or '').strip()
+            comment = (row[4] or '').strip()
+            if not player_name or player_name in ('不明', 'unknown', 'Unknown'):
+                continue
+            # スカウトコメントの球団は既に team_key（giants/hawks等）で入っている。
+            # NPB12球団に特定できるものだけ視察化する（other/MLB/不明/リーグ単位は対象外）。
+            team_key = _scout_team_to_npb_key(scout_team)
+            if not team_key:
+                continue
+            pair = (normalize_player_key(player_name), team_key)
+            if pair in existing_pairs:
+                continue
+            existing_pairs.add(pair)
+            visit_rows.append({
+                'player_name': player_name,
+                'person_count': None,
+                'event_date_text': None,
+                'event_date': None,
+                'event_date_precision': None,
+                'source_url': (row[6] or '').strip() or article.get('url', ''),
+                'source_title': article.get('title', ''),
+                'published_at': (row[5] or '').strip() or article.get('date', ''),
+                'source': article.get('source', ''),
+                'article_category': article.get('category', ''),
+                'evidence': comment or f"{scout_team}のスカウトコメントあり（視察と判断）",
+                'team_name': scout_team,
+                'team_key': team_key,
+                'extracted_raw': {'derived_from': 'scout_comment'},
+            })
+            derived_total += 1
+
+        article['scout_visit_rows'] = visit_rows
+
+    print(f"[DEBUG] スカウトコメントから補完した視察行: {derived_total}件")
+    return articles
 
 
 def _linkify_main_player(markdown: str, summary_json: Dict[str, Any]) -> str:

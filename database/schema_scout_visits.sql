@@ -16,7 +16,7 @@ create table if not exists public.scout_visits (
   event_date date null,
   event_date_text text null,
   event_date_precision text null,
-  source_url text not null,
+  source_url text,  -- コメント由来の補完視察は出典URLが無い場合があるため nullable（schema_scout_visits_nullable_source_url.sql）
   source_title text null,
   published_at timestamp with time zone null,
   source text null,
