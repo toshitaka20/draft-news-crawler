@@ -630,6 +630,22 @@ def _linkify_main_player(markdown: str, summary_json: Dict[str, Any]) -> str:
     return markdown
 
 
+def _sanitize_excerpt(value: Any) -> Optional[str]:
+    """
+    抜粋(excerpt)からMarkdownリンク・記号を除去してプレーンテキストにする。
+    モデルが `[名前](URL)` 等を入れても、選手名がリンク化されないようにする後処理。
+    """
+    text = str(value or '').strip()
+    if not text:
+        return None
+    # [表示テキスト](URL) → 表示テキスト（リンクを外し、選手名等は素のテキストに）
+    text = re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', text)
+    # 残ったMarkdown記号・見出し記号を除去
+    text = re.sub(r'[*_`>#\[\]]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text or None
+
+
 def generate_draft_watch_article_with_gemini(summary_json: Dict[str, Any]) -> Optional[Dict[str, str]]:
     """
     summary_json（複数ソースから整理済みの構造化データ）からDraft-Watch下書き記事を生成する。
@@ -717,6 +733,12 @@ JSONオブジェクトのみを返してください。説明文、Markdownの�
   - 「怪物」「熱視線」「驚愕」のように、内容に見合った範囲で読者の関心を引く一語を添えてもよい（事実と異なる誇張は禁止）
   - 文末は「〜へ」「〜など注目」のように今後への期待を残す形で締めてもよい
   - 全体で50〜90字程度を目安にする（一目で主題と数値的根拠が伝わる長さにする）
+- excerpt: 記事一覧やSNSで使う短い紹介文（記事カードの説明文）。次のルールで作る。
+  - 30〜60字程度の1文を目安に、簡潔にまとめる。リード文（本文冒頭）の丸写しは禁止。
+  - 「なぜこの記事が注目に値するか」が一目で伝わる、記事の重要性・要点を表す表現にする（タイトルに近い温度感でよい）。
+  - title と全く同じ文にはしない（言い換え・補足で差をつける）。冒頭の【カテゴリ】タグは付けない。
+  - **Markdownリンクや記号は使わず、プレーンテキストにする**（選手名もリンクにしない。`[名前](URL)` のような記法を入れない）。
+  - データにある数値や事実だけを使い、誇張・創作はしない。
 - markdown: 上記構成に沿った本文（Markdown形式の文字列。タイトルの見出し行は含めない）
 
 【構造化データ】
@@ -733,7 +755,8 @@ JSONオブジェクトのみを返してください。説明文、Markdownの�
             return None
 
         markdown = _linkify_main_player(markdown, summary_json)
-        return {'title': title, 'markdown': markdown}
+        excerpt = _sanitize_excerpt(parsed.get('excerpt'))
+        return {'title': title, 'markdown': markdown, 'excerpt': excerpt}
 
     except Exception as e:
         print(f"[Generative AI Gemini Draft-Watch記事生成エラー] {e}")

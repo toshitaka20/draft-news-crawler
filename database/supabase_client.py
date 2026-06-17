@@ -1828,6 +1828,8 @@ class SupabaseDraftWatchCandidateStore:
             if generated:
                 update_fields['draft_article_markdown'] = generated['markdown']
                 update_fields['title'] = generated['title']
+                if generated.get('excerpt'):
+                    update_fields['draft_article_excerpt'] = generated['excerpt']
                 stats['drafts_generated'] += 1
                 print(f"[DraftWatch] 下書き生成: {generated['title']}（importance_score={importance_score}）")
 
