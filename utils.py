@@ -124,6 +124,14 @@ SCOUT_AFFILIATED_ROLE_PATTERN = re.compile(
 SCOUT_COMMENT_VERB_PATTERN = re.compile(
     r'(評価|絶賛|太鼓判|コメント|話した|語った|評した|称賛|注目|マーク)'
 )
+# 日刊スポーツ等の「▽球団＋スカウト名＋役職 ＋直接コメント」箇条書き形式。
+# 引用動詞や「」が無くてもスカウトの発言ブロックなので、コメント候補として拾う。
+BULLET_SCOUT_QUOTE_PATTERN = re.compile(
+    r'[▽▼►▶◇]\s*[^。\n]{0,14}?'
+    r'(スカウト(?![をのが、。\s])[\w一-龥ァ-ンー・／兼]*|アマスカウト[\w一-龥ァ-ンー・／兼]*|'
+    r'編成(?:[\w一-龥ァ-ンー・／兼]{0,16})?(?:本部長|副本部長|部長|副部長|担当|ディレクター|部|グループ)|'
+    r'(?:GM|ＧＭ)(?!業)|CBO|ＣＢＯ)'
+)
 NEGATIVE_SIGNAL_PATTERN = re.compile(
     r'(コメントはなかった|コメントはない|コメントなし|発言はなかった|発言はない|'
     r'視察の記述はない|視察の記述はなかった|視察はなかった|視察はない|'
@@ -375,6 +383,12 @@ def has_scout_comment_candidate(text: str) -> bool:
         return False
     if re.search(r'(7回制|７回制|7イニング制|７イニング制|意見交換会|検討会議)', text):
         return False
+
+    # 「▽球団＋スカウト名＋役職」の箇条書きコメント（引用動詞・鉤括弧なし）を先に拾う。
+    for bullet_match in BULLET_SCOUT_QUOTE_PATTERN.finditer(text):
+        window = text[bullet_match.start():bullet_match.start() + 400]
+        if not _is_negative_signal(window):
+            return True
 
     for role_match in SCOUT_COMMENT_ROLE_PATTERN.finditer(text):
         if _has_former_role_prefix(text, role_match.start()):
