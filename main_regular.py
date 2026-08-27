@@ -33,6 +33,32 @@ def get_existing_urls_for_source(source: str) -> set:
     print(f"[DEBUG] DB既存URLが空のためSheets fallback: {source}")
     return get_existing_urls_by_source(source)
 
+def fetch_hochi_all_categories(exclude_urls: set) -> List[Dict[str, Any]]:
+    """
+    スポーツ報知の全カテゴリを取得する（カテゴリ単位の失敗は握りつぶして続行）
+    """
+    articles: List[Dict[str, Any]] = []
+    for category, url in HOCHI_URLS.items():
+        print(f"  {category}記事取得中...")
+        try:
+            articles.extend(fetch_hochi_articles(url, exclude_urls=exclude_urls, category=category))
+        except Exception as e:
+            print(f"[エラー] スポーツ報知 {category} 取得失敗: {e}")
+    return articles
+
+
+def fetch_source_articles(source: str, fetcher) -> List[Dict[str, Any]]:
+    """
+    1媒体分の記事を取得する。1媒体が落ちても他媒体・後続処理は継続する。
+    """
+    try:
+        existing_urls = get_existing_urls_for_source(source)
+        return fetcher(existing_urls)
+    except Exception as e:
+        print(f"[エラー] {source} 取得失敗（この媒体をスキップして続行）: {e}")
+        return []
+
+
 def main():
     """
     既存5社専用メイン処理
@@ -44,43 +70,46 @@ def main():
     try:
         # 1. スポニチ記事取得
         print("\n1. スポニチ記事取得中...")
-        sponichi_existing_urls = get_existing_urls_for_source('スポニチ')
-        sponichi_articles = fetch_all_sponichi_articles(exclude_urls=sponichi_existing_urls)
+        sponichi_articles = fetch_source_articles(
+            'スポニチ',
+            lambda urls: fetch_all_sponichi_articles(exclude_urls=urls),
+        )
         all_articles.extend(sponichi_articles)
         print(f"スポニチ記事数: {len(sponichi_articles)}")
-        
+
         # 2. スポーツ報知記事取得
         print("\n2. スポーツ報知記事取得中...")
-        hochi_existing_urls = get_existing_urls_for_source('スポーツ報知')
-        hochi_articles = []
-        for category, url in HOCHI_URLS.items():
-            print(f"  {category}記事取得中...")
-            category_articles = fetch_hochi_articles(url, exclude_urls=hochi_existing_urls, category=category)
-            hochi_articles.extend(category_articles)
+        hochi_articles = fetch_source_articles('スポーツ報知', fetch_hochi_all_categories)
         all_articles.extend(hochi_articles)
         print(f"スポーツ報知記事数: {len(hochi_articles)}")
-        
+
         # 3. 日刊スポーツ記事取得
         print("\n3. 日刊スポーツ記事取得中...")
-        nikkan_existing_urls = get_existing_urls_for_source('日刊スポーツ')
-        nikkan_articles = fetch_all_nikkan_sports_articles(exclude_urls=nikkan_existing_urls)
+        nikkan_articles = fetch_source_articles(
+            '日刊スポーツ',
+            lambda urls: fetch_all_nikkan_sports_articles(exclude_urls=urls),
+        )
         all_articles.extend(nikkan_articles)
         print(f"日刊スポーツ記事数: {len(nikkan_articles)}")
-        
+
         # 4. サンスポ記事取得
         print("\n4. サンスポ記事取得中...")
-        sanspo_existing_urls = get_existing_urls_for_source('サンスポ')
-        sanspo_articles = fetch_all_sanspo_articles(exclude_urls=sanspo_existing_urls)
+        sanspo_articles = fetch_source_articles(
+            'サンスポ',
+            lambda urls: fetch_all_sanspo_articles(exclude_urls=urls),
+        )
         all_articles.extend(sanspo_articles)
         print(f"サンスポ記事数: {len(sanspo_articles)}")
-        
+
         # 5. 中日スポーツ記事取得
         print("\n5. 中日スポーツ記事取得中...")
-        chunichi_existing_urls = get_existing_urls_for_source('中日スポーツ')
-        chunichi_articles = fetch_all_chunichi_articles(exclude_urls=chunichi_existing_urls)
+        chunichi_articles = fetch_source_articles(
+            '中日スポーツ',
+            lambda urls: fetch_all_chunichi_articles(exclude_urls=urls),
+        )
         all_articles.extend(chunichi_articles)
         print(f"中日スポーツ記事数: {len(chunichi_articles)}")
-        
+
         print(f"\n=== 総記事数: {len(all_articles)}件 ===")
         
         if not all_articles:
