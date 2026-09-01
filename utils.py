@@ -141,6 +141,8 @@ NEGATIVE_SIGNAL_PATTERN = re.compile(
 )
 ATTENTION_PATTERN = re.compile(
     r'(視察|集結|熱視線|スカウト陣|スカウトが訪れ|スカウト.*詰めかけ|'
+    # スカウト会議・編成会議そのものを報じた記事も注目度シグナルとして拾う。
+    r'スカウト会議|編成会議|合同スカウト会議|スカウト部長会議|'
     r'スカウト.*見守|スカウト.*持参|バックネット裏.*スカウト|'
     # 「見守った…スカウト」「ネット裏…スカウト」のように語順が逆のケースも拾う（同一文内）。
     r'見守[^。\n]{0,40}スカウト|ネット裏[^。\n]{0,40}スカウト|スカウト[^。\n]{0,40}ネット裏|'
@@ -282,6 +284,13 @@ SCOUT_MEETING_KEYWORDS = [
     '上位候補', '1位候補', '指名候補', '候補選手を確認', '球団幹部',
 ]
 
+# 「会議そのものを報じた記事」だけを指す限定リスト。
+# SCOUT_MEETING_KEYWORDS は「指名候補」「上位候補」など個別選手の記事にも頻出するため、
+# トピック判定で選手より優先させる用途にはこちらを使う。
+SCOUT_MEETING_EVENT_KEYWORDS = [
+    'スカウト会議', '編成会議', '合同スカウト会議', 'スカウト部長会議',
+]
+
 
 def has_scout_meeting_signal(text: str) -> bool:
     """
@@ -290,6 +299,15 @@ def has_scout_meeting_signal(text: str) -> bool:
     if not text:
         return False
     return any(keyword in text for keyword in SCOUT_MEETING_KEYWORDS)
+
+
+def has_scout_meeting_event(text: str) -> bool:
+    """
+    スカウト会議・編成会議が開催されたこと自体を報じた記事かを判定する。
+    """
+    if not text:
+        return False
+    return any(keyword in text for keyword in SCOUT_MEETING_EVENT_KEYWORDS)
 
 
 KNOWN_SCOUT_STAFF_NAMES = [
@@ -508,6 +526,13 @@ def extract_attention_rows(article: Dict[str, Any]) -> List[List[Any]]:
         texts.append(title)
     rows = []
 
+    title_team_keys = []
+    for team in JAPANESE_TEAM_NAMES:
+        if team in title:
+            title_team_key = normalize_team_key(team)
+            if title_team_key and title_team_key not in title_team_keys:
+                title_team_keys.append(title_team_key)
+
     for text in texts:
         for sentence in re.split(r'[。\n]', text):
             sentence = clean_text(sentence)
@@ -539,12 +564,20 @@ def extract_attention_rows(article: Dict[str, Any]) -> List[List[Any]]:
             has_npb = bool(re.search(r'(NPB|ＮＰＢ|プロ野球|球団|スカウト|視察)', sentence)) or bool(team_keys)
             has_comment = has_scout_comment_candidate(sentence)
             has_scout_presence = bool(re.search(r'スカウト', sentence))
+            has_meeting = has_scout_meeting_event(sentence)
 
-            if not (team_count or person_count or team_keys or has_mlb or has_comment or has_scout_presence):
+            # スカウト会議の記事は、会議を開いた球団名が見出しにしか出ない文がある
+            # （例:「次回スカウト会議は10月に開催予定」）。球団が特定できないと会議トピックの
+            # topic_key を作れず、同じ記事から重複トピックが生まれるため見出しから補完する。
+            if has_meeting and not team_keys and title_team_keys:
+                team_keys = list(title_team_keys)
+                has_npb = True
+
+            if not (team_count or person_count or team_keys or has_mlb or has_comment or has_scout_presence or has_meeting):
                 continue
 
             score = calculate_attention_score(team_count, person_count, team_keys, has_mlb, has_comment)
-            if score == 0 and has_scout_presence:
+            if score == 0 and (has_scout_presence or has_meeting):
                 score = 1
             rows.append([
                 article.get('date', ''),

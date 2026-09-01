@@ -1602,7 +1602,12 @@ class SupabaseDraftWatchCandidateStore:
         crawled_id_map: Dict[str, str],
         stats: Dict[str, int],
     ) -> None:
-        from utils import normalize_player_key, build_topic_key, has_scout_meeting_signal
+        from utils import (
+            normalize_player_key,
+            build_topic_key,
+            has_scout_meeting_signal,
+            has_scout_meeting_event,
+        )
 
         source_url = self._to_optional_str(signal.get('source_url'))
         if not source_url:
@@ -1625,10 +1630,16 @@ class SupabaseDraftWatchCandidateStore:
         main_player_positions = (info or {}).get('position') or []
         draft_year = (info or {}).get('draft_year')
 
-        # トピック種別の判定（主役選手が分かれば player_watch、スカウト会議系の検出語があれば scout_meeting、それ以外は other）
-        if main_player_name:
+        # トピック種別の判定。
+        # attention_signals は source_url 経由で記事中の選手を自動紐付けするため、会議記事でも主役選手が
+        # 埋まる。そのままだと常に player_watch に倒れて scout_meeting が成立しないので、会議の開催自体を
+        # 報じた記事（SCOUT_MEETING_EVENT_KEYWORDS）は選手紐付けより会議トピックを優先する。
+        meeting_text = f"{source_title or ''}\n{evidence}"
+        if has_scout_meeting_event(meeting_text):
+            topic_type = 'scout_meeting'
+        elif main_player_name:
             topic_type = 'player_watch'
-        elif has_scout_meeting_signal(f"{source_title or ''}\n{evidence}"):
+        elif has_scout_meeting_signal(meeting_text):
             topic_type = 'scout_meeting'
         else:
             topic_type = 'other'

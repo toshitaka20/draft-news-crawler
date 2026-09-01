@@ -77,6 +77,22 @@ CASES = [
         "title": "ドラフト候補対決に12球団が集結",
         "body": "ドラフト候補対決にNPB12球団32人が集結した。スカウトの具体的なコメントはなかった。",
     },
+    {
+        # スカウト会議の開催そのものを報じた記事。視察人数も球団数も出てこないため、
+        # 「スカウト会議」の語を拾えないと attention_rows が0件になり、Draft-Watch候補が作られない。
+        "name": "scout_meeting_should_signal",
+        "expected_scout": True,
+        "expected_attention": True,
+        "expected_player": True,
+        "expected_rows_min": 1,
+        "title": "【日本ハム】スカウト会議でドラフト指名候補を約90人に絞る",
+        "body": (
+            "日本ハムは28日、エスコンフィールドで第4回スカウト会議を行い、今秋ドラフト会議での"
+            "指名候補を約90人（高校生40人、大学・社会人50人）に絞った。夏の甲子園大会で評価を上げた"
+            "選手について、大渕CBO補佐兼スカウト部長は大分商の右腕、平田玲翔投手（3年）の名前を挙げ"
+            "「もともと評価していたけど、さらに上がった」。次回スカウト会議は10月に開催予定。"
+        ),
+    },
 ]
 
 
@@ -115,10 +131,12 @@ def main() -> None:
         for row in article.get("attention_rows", []):
             print(f"    row: team_count={row[5]} person_count={row[6]} teams={row[7]} score={row[10]}")
 
+        rows_min = case.get("expected_rows_min", 0)
         if (
             scout != case["expected_scout"]
             or attention != case["expected_attention"]
             or player != case["expected_player"]
+            or len(article.get("attention_rows", [])) < rows_min
         ):
             failures.append(case["name"])
 
