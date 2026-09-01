@@ -372,6 +372,39 @@ Draft-Watch の `/scouts/[team]/[year]` ページ「スカウト会議・編成�
 | `created_at` | `timestamptz` |  Nullable |
 | `updated_at` | `timestamptz` |  Nullable |
 
+## Table `player_rank_predictions`
+
+ログインユーザーによる「この選手は何位で指名されるか」の投票（選手×ユーザーで1票）。crawlerは書かない、サイト側で生成されるユーザーデータ。
+
+`/players/[year]/[id]` の順位予想、`/my-draft-list/rank`、マイページで読み書きする。集計はDB関数 `get_player_rank_summary` / `get_player_rank_leaderboard` / `get_overall_player_ranking` 経由。トップページの「急上昇」ランキングだけは `created_at` で期間を切って直接selectしている（draft-watchリポ `lib/data.ts` の `getTrendingPlayerRanking`）。
+
+### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary, default `gen_random_uuid()` |
+| `player_id` | `uuid` | NOT NULL, references `players(id)` |
+| `user_id` | `uuid` | NOT NULL。`auth.users` のユーザー |
+| `bucket` | `text` | NOT NULL。9区分（下記） |
+| `created_at` | `timestamptz` | default `now()` |
+| `updated_at` | `timestamptz` | default `now()` |
+
+### bucket の値
+
+上位指名ほど weight が大きい9区分。定義の正本は draft-watchリポの `lib/draft-rank.ts`（`RANK_BUCKETS`）。
+
+| 値 | ラベル | weight |
+|---|---|---|
+| `kyogo` | 競合（1位重複） | 9 |
+| `tandoku` | 単独1位 | 8 |
+| `hazure1` | 外れ1位 | 7 |
+| `r2` | 2位 | 6 |
+| `r3` | 3位 | 5 |
+| `r4` | 4位 | 4 |
+| `r5` | 5位 | 3 |
+| `r6plus` | 6位〜 | 2 |
+| `ikusei` | 育成 | 1 |
+
 ## Table `crawled_articles`
 
 ### Columns
@@ -571,3 +604,114 @@ Draft-Watch記事候補と元記事の多対多を保存する。
 - `role in ('primary', 'source', 'supporting')`
 - unique: `(draft_watch_article_candidate_id, source_url)`
 - index: `draft_watch_article_candidate_id`, `crawled_article_id`, `source_url`
+
+### Table `scout_visits`
+
+**個別の視察イベント**を1行1件で保存する。「いつ・どの球団が・誰を見に来たか」の正本。
+
+`attention_signals` との違い: `attention_signals` は記事単位の集計（視察球団数・人数・スコア）、`scout_visits` は球団を1行に分解した明細。球団別の視察タイムラインや選手別の視察サマリはこちらから作る。
+
+サイト側はテーブルを直接selectせず、DB関数 `get_player_visit_summary` / `get_player_scout_visits` / `get_team_visit_timeline` / `get_team_listup`（いずれもSECURITY DEFINER）経由で読む。
+
+#### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary, default `gen_random_uuid()` |
+| `crawled_article_id` | `uuid` | Nullable, references `crawled_articles(id)` |
+| `player_id` | `uuid` | Nullable, references `players(id)` |
+| `player_candidate_id` | `uuid` | Nullable, references `player_candidates(id)` |
+| `player_name` | `text` | Nullable |
+| `team_key` | `text` | Nullable。視察した球団（12球団キー） |
+| `person_count` | `int4` | Nullable。その球団が送り込んだ人数 |
+| `event_date` | `date` | Nullable。視察日 |
+| `event_date_text` | `text` | Nullable。本文中の日付表現をそのまま（「29日」など） |
+| `event_date_precision` | `text` | Nullable。`exact` / `approximate` / `unknown` |
+| `source_url` | `text` | Nullable |
+| `source_title` | `text` | Nullable |
+| `published_at` | `timestamptz` | Nullable |
+| `source` | `text` | Nullable。媒体名 |
+| `category` | `text` | Nullable。`高校野球` / `大学野球` / `社会人野球` / `大学・社会人野球` |
+| `evidence` | `text` | NOT NULL。根拠となる本文抜粋 |
+| `evidence_hash` | `text` | Nullable |
+| `created_at` | `timestamptz` | default `now()` |
+| `updated_at` | `timestamptz` | default `now()` |
+
+#### Notes
+
+- `player_id` / `player_candidate_id` はどちらもNullable。`players` 未登録の選手は `player_candidate_id` 側で受ける。
+- `team_key` がNULLの行がある（球団を特定できなかった視察）。球団別集計では落ちる。
+- `event_date` はNULLが多数。日付が取れない場合は `published_at` で代用する前提。
+
+### Table `player_article_sources`
+
+選手と記事の多対多を、抽出根拠つきで保存する。`crawled_articles` から選手を抽出した際の出所を残すためのテーブル。
+
+#### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary, default `gen_random_uuid()` |
+| `player_id` | `uuid` | NOT NULL, references `players(id)` |
+| `crawled_article_id` | `uuid` | Nullable, references `crawled_articles(id)` |
+| `source_url` | `text` | NOT NULL |
+| `source_title` | `text` | Nullable |
+| `published_at` | `timestamptz` | Nullable |
+| `source` | `text` | Nullable |
+| `category` | `text` | Nullable |
+| `evidence` | `text` | Nullable。選手名を含む本文抜粋 |
+| `confidence` | `numeric` | Nullable。0〜1 |
+| `extracted_raw` | `jsonb` | Nullable。抽出時のLLM出力そのまま（name/team_name/position/throws/bats など） |
+| `created_at` | `timestamptz` | default `now()` |
+
+### View `player_timeline_items`
+
+選手ページの「関連ニュース」タイムライン用のビュー。実テーブルではないので直接INSERTしない。
+
+選手に関係する5系統の出来事を `item_type` で束ねた union。サイト側はDB関数 `get_player_news_timeline(p_player_id, p_limit, p_offset)` 経由で読む（draft-watchリポ `lib/data.ts` の `getPlayerNews`）。
+
+| `item_type` | 元テーブル | 件数（2026-09-01時点） |
+|---|---|---|
+| `scout_comment` | `scout_comments` | 3,447 |
+| `player_article` | `player_article_sources` | 3,047 |
+| `draft_watch_article` | `articles`（Draft-Watch自前記事。`source` が `Draft-Watch`） | 965 |
+| `candidate` | `player_candidate_sources` | 818 |
+| `attention` | `attention_signals`（`score` が入るのはこの型のみ） | 632 |
+
+元テーブルの全行が出るわけではない（`player_article_sources` は4,944行あるがビューでは3,047行）。選手に紐付かない行の除外や重複排除が入っているとみられるが、ビュー定義は未確認。
+
+#### Columns
+
+| Name | Type |
+|------|------|
+| `player_id` | `uuid` |
+| `player_candidate_id` | `uuid` |
+| `crawled_article_id` | `uuid` |
+| `source_url` | `text` |
+| `title` | `text`（`scout_comment` ではNULL） |
+| `published_at` | `timestamptz` |
+| `source` | `text` |
+| `category` | `text` |
+| `item_type` | `text`（上記5値） |
+| `body` | `text`（本文抜粋。`scout_comment` では「球団キー スカウト名 コメント」形式） |
+| `confidence` | `numeric` |
+| `score` | `int4` |
+| `created_at` | `timestamptz` |
+
+## Views
+
+記事の件数カウント用の集計ビュー。いずれも読み取り専用で、サイト側から直接selectしている（draft-watchリポ `lib/data.ts` の `getNewsCategoryCountsFromView` / `getTeamNewsCountsFromView`）。
+
+### View `news_category_counts`
+
+| Name | Type | 備考 |
+|------|------|------|
+| `category` | `text` | `high_school` / `university` / `social_independent_farm` |
+| `count` | `int8` | 該当カテゴリの記事数 |
+
+### View `team_news_counts`
+
+| Name | Type | 備考 |
+|------|------|------|
+| `team` | `text` | 12球団キー（`tigers` / `eagles` など） |
+| `count` | `int8` | 該当球団の記事数 |
