@@ -8,7 +8,7 @@ import json
 import re
 from typing import List, Dict, Any, Optional
 from config import GEMINI_API_KEY, GEMINI_MODEL
-from utils import normalize_team_key, ALL_NPB_TEAM_KEYS, normalize_player_key
+from utils import normalize_team_key, ALL_NPB_TEAM_KEYS, normalize_player_key, team_display_name
 
 def setup_gemini():
     """
@@ -630,6 +630,86 @@ def _linkify_main_player(markdown: str, summary_json: Dict[str, Any]) -> str:
     return markdown
 
 
+def _rewrite_scout_comments_section(markdown: str, summary_json: Dict[str, Any]) -> str:
+    """
+    「## スカウト評価」セクションを summary_json の scout_comments から作り直す。
+    モデルがセクションごと落としたり、コメントを要約・改変したりすることがあるため確定的に組み直す。
+    scout_comments が空の場合は何もしない（不在に言及しない方針のため、空セクションは作らない）。
+    """
+    comments = (summary_json or {}).get('scout_comments') or []
+    if not markdown or not comments:
+        return markdown
+
+    lines = []
+    seen = set()
+    for c in comments:
+        comment = (c.get('comment') or '').strip()
+        if not comment:
+            continue
+        team = team_display_name(c.get('team')) or ''
+        scout = (c.get('scout_name') or '').strip()
+        key = (team, scout, comment)
+        if key in seen:
+            continue
+        seen.add(key)
+        quoted = comment if comment.startswith('「') else f'「{comment}」'
+        prefix = f'【{team}】' if team else ''
+        lines.append(f'- {prefix}{scout}{quoted}')
+
+    if not lines:
+        return markdown
+
+    section = "## スカウト評価\n\n" + "\n".join(lines)
+    existing = re.compile(r'^##\s*スカウト評価\s*$.*?(?=^##\s|\Z)', flags=re.MULTILINE | re.DOTALL)
+    if existing.search(markdown):
+        return existing.sub(section + "\n\n", markdown, count=1).rstrip() + "\n"
+
+    # セクションが無い場合は、選手プロフィール（無ければ出典）の直前に差し込む。
+    for heading in (r'^##\s*選手プロフィール\s*$', r'^##\s*出典\s*$'):
+        match = re.search(heading, markdown, flags=re.MULTILINE)
+        if match:
+            head = markdown[:match.start()].rstrip()
+            tail = markdown[match.start():]
+            return f"{head}\n\n{section}\n\n{tail}"
+    return markdown.rstrip() + "\n\n" + section + "\n"
+
+
+def _rewrite_sources_section(markdown: str, summary_json: Dict[str, Any]) -> str:
+    """
+    生成記事の「## 出典」セクションを summary_json の sources から作り直す。
+    モデルは「- [媒体名] [タイトル](URL)」の形式をよく崩す（媒体名側をリンクにする等）ため、
+    ここで確定的に組み直す。sources が空の場合は元の記述をそのまま残す。
+    """
+    sources = (summary_json or {}).get('sources') or []
+    if not markdown or not sources:
+        return markdown
+
+    lines = []
+    seen_urls = set()
+    for s in sources:
+        url = (s.get('url') or '').strip()
+        title = (s.get('title') or '').strip()
+        source = (s.get('source') or '').strip()
+        if not title and not url:
+            continue
+        if url and url in seen_urls:
+            continue
+        if url:
+            seen_urls.add(url)
+        label = f"[{source}] " if source else ''
+        lines.append(f"- {label}[{title}]({url})" if url else f"- {label}{title}")
+
+    if not lines:
+        return markdown
+
+    section = "## 出典\n\n" + "\n".join(lines)
+    # 「## 出典」以降（次の見出しの手前まで）を差し替える。見出しが無ければ末尾に追加する。
+    pattern = re.compile(r'^##\s*出典\s*$.*?(?=^##\s|\Z)', flags=re.MULTILINE | re.DOTALL)
+    if pattern.search(markdown):
+        return pattern.sub(section + "\n\n", markdown, count=1).rstrip() + "\n"
+    return markdown.rstrip() + "\n\n" + section + "\n"
+
+
 def _sanitize_excerpt(value: Any) -> Optional[str]:
     """
     抜粋(excerpt)からMarkdownリンク・記号を除去してプレーンテキストにする。
@@ -662,13 +742,19 @@ def generate_draft_watch_article_with_gemini(summary_json: Dict[str, Any]) -> Op
 【厳守事項】
 - 外部記事の文章をそのまま転載・言い換えしない。素材を整理し直した独自の記事にする。
 - 構造化データに含まれない情報を推測・創作しない（不明な点は無理に書かない）。
+- summary_json に `article_bodies`（出典記事の本文）が入っている場合の扱い:
+  - これは事実を拾うための素材であり、**文章をなぞる対象ではない**。段落構成・語順・言い回しを引き写さず、必ず自分で組み立て直す。原文の一文をそのまま、または語尾だけ変えて使うことは禁止。
+  - 一方で、本文にしか書かれていない具体的な事実は落とさずに拾う。特に、日付・場所・回数（第◯回など）、絞り込んだ人数とその内訳（高校生◯人・大学社会人◯人など）、上位候補の人数、名前が挙がった選手とその所属・学年、地域や属性ごとの人数、今後の視察予定（大会名・派遣先・時期）、次回の開催予定は、記載があれば漏らさず記事に反映する。
+  - `article_bodies` に書かれていないことは、ここでも推測・創作しない。
+  - 発言を「」で引用する場合、`scout_comments` に無い発言は `article_bodies` に原文があるものだけを使い、文言を改変しない。
 - スカウトコメントが無い場合でも、その不在に言及しない。「スカウトの評価コメントはなかった」「スカウトコメントは確認できなかった」「コメントは見られなかった」のような“無い”ことを述べる文・断り書きは一切書かず、該当箇所やセクションを単に省略する。
 - 選手名のリンク化: summary_json の main_player に `draft_watch_url` がある場合、本文（リード文・本記）で当該選手名が最初に登場する箇所と、選手プロフィール見出し直後の表記で、選手名を Markdownリンク `[選手名](draft_watch_url)` にする。`draft_watch_url` が無い選手はリンクにしない（URLを推測・創作しない）。
+- markdown の1行目は必ずリード文の段落にする。`#` や `##` で始まる出力は不可（リード文の後に初めて `##` 見出しが来る）。
 - 記事は必ず Markdown の見出し（##）を使って構造化する。プレーンテキストの段落だけを並べてはいけない。
   ドラフト専門メディアでよく見られる、次の構成・文体を踏襲する:
 
   1. リード文（100〜150字程度、1段落）
-     - 見出しは付けず、記事冒頭の導入文として置く。
+     - 見出しは付けず、記事冒頭の導入文として置く。**本文の1行目が `##` 見出しで始まってはいけない。必ずリード文の段落から書き始める。**
      - 「誰が」「いつ・どこで」「何をしたか」を、具体的な数値（球速・成績・視察球団数など）を交えて簡潔に要約する。
      - この一段落で記事の主題が伝わるようにする。
 
@@ -684,10 +770,13 @@ def generate_draft_watch_article_with_gemini(summary_json: Dict[str, Any]) -> Op
          → 経歴や成長過程（出身校・入団後の変化など、データにあるもののみ）
          → 今後の目標や課題
        - スカウト会議・候補リストアップ系の話題（scout_meetingなど）の場合:
-         会議や発表が行われた事実（いつ・どこで・誰が）
-         → 候補者数の絞り込みなど数値的な変化
-         → 上位候補として名前が挙がった選手の具体的な列挙（高校生・大学生・社会人などで層別できる場合は層別する。箇条書き `-` を使ってよい）
+         会議や発表が行われた事実（いつ・どこで・誰が。第◯回・開催場所も記載があれば書く）
+         → 候補者数の絞り込みなど数値的な変化（総数と内訳、上位候補の人数、地域・属性ごとの人数まで具体的に）
+         → 上位候補として名前が挙がった選手の具体的な列挙（高校生・大学生・社会人などで層別できる場合は層別する。箇条書き `-` を使ってよい。所属・学年・ポジションが分かるものは併記する）。**素材に選手名が挙がっていれば省略せず全員書く。読者が最も知りたいのは「誰が候補に挙がったか」であり、ここを落とした記事は不合格とする**
+         → 個別に評価が言及された選手があれば、その評価内容とスカウトの発言
+         → 今後の視察計画（派遣先の大会・時期）や次回会議の予定
          → 球団側の新方針や戦略についての言及
+         このタイプでは主役選手のプロフィール紹介より、**会議で決まった事実と候補者の全体像**を記事の中心に置く。
      - いずれの場合も、データにある事実を時系列・論理順に並べ、推測で繋がない。
 
   3. コメント・評価の引用ルール（本記の各セクション内で使う）
@@ -713,15 +802,18 @@ def generate_draft_watch_article_with_gemini(summary_json: Dict[str, Any]) -> Op
   6. 選手プロフィール（`## 選手プロフィール` という見出しを付ける）※ main_player に基本情報がある場合のみ
      - main_player の基本情報のうち存在する項目を箇条書きで掲載する。例: 身長(height_cm)・体重(weight_kg)・投打(throw/bat)・最速球速(fastball_max)・球種(breaking_balls)・出身校/経歴(career)・出身地(prefecture)・ドラフト対象年(draft_year)。
        例: 「- 身長／体重: 186cm／71kg」「- 投打: 右投左打」「- 最速: 148キロ」「- 球種: スライダー、フォーク」「- 経歴: 大阪電通大高→天理大」。
-     - main_player に description があれば、箇条書きの下に紹介文として1段落で載せる。
+     - main_player に description があれば、箇条書きの後に空行を1行入れ、独立した段落として載せる（`-` を付けて箇条書きの項目にしない）。
      - main_player が name/team/positions 程度しか持たず基本情報・descriptionが無い場合は、このセクションごと省略する。
 
   7. 出典一覧（`## 出典` という見出しを付ける）
      - その下に summary_json の sources 配列の要素「だけ」を、Markdownリンク形式「- [媒体名] [タイトル](URL)」で列挙する（各要素の url を使って必ずリンクにする。媒体名は source、タイトルは title を使う）。
+       媒体名は角括弧で囲むだけでリンクにしない。リンクになるのはタイトルだけ。
+       例: `- [日刊スポーツ] [【日本ハム】スカウト会議でドラフト指名候補を約90人に絞る](https://www.nikkansports.com/baseball/news/202608280000910.html)`
      - url が無い要素のみリンクにせず「- [媒体名] タイトル」とする。
      - sources に含まれない情報（eventsの本文や推測など）を出典として加えない。sources が1件なら出典も1行にする。
 
   全体の文体は「～した」「～見せた」のような過去形・進行形を基本とし、数値は「156キロ」のように算用数字、球団数など概数的な表現は「9球団」のように漢数字も使い分ける。
+  **文末は必ず「だ・である」調（常体）にする。「です」「ます」「ました」「でしょう」などの敬体は記事本文・excerpt のどちらでも使用禁止**（例:「絞り込んだ」と書き、「絞り込みました」とは書かない）。ただし「」内の発言引用は原文のままでよい。
 
 【出力形式】
 JSONオブジェクトのみを返してください。説明文、Markdownのコードブロック、前置きは不要です。
@@ -774,6 +866,7 @@ JSONオブジェクトのみを返してください。説明文、Markdownの�
   - 「なぜこの記事が注目に値するか」が一目で伝わる、記事の重要性・要点を表す表現にする（タイトルに近い温度感でよい）。
   - title と全く同じ文にはしない（言い換え・補足で差をつける）。冒頭の【カテゴリ】タグは付けない。
   - **Markdownリンクや記号は使わず、プレーンテキストにする**（選手名もリンクにしない。`[名前](URL)` のような記法を入れない）。
+  - **文末は常体（「〜した」「〜だ」）にする。「です」「ます」「ました」は使わない。**
   - データにある数値や事実だけを使い、誇張・創作はしない。
 - markdown: 上記構成に沿った本文（Markdown形式の文字列。タイトルの見出し行は含めない）
 
@@ -791,6 +884,8 @@ JSONオブジェクトのみを返してください。説明文、Markdownの�
             return None
 
         markdown = _linkify_main_player(markdown, summary_json)
+        markdown = _rewrite_scout_comments_section(markdown, summary_json)
+        markdown = _rewrite_sources_section(markdown, summary_json)
         excerpt = _sanitize_excerpt(parsed.get('excerpt'))
         return {'title': title, 'markdown': markdown, 'excerpt': excerpt}
 

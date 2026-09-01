@@ -1227,6 +1227,9 @@ class SupabaseDraftWatchCandidateStore:
     DEFAULT_LOOKBACK_HOURS = 30
     GENERATION_THRESHOLD = 1
     NEAR_MATCH_DAYS = 3
+    # summary_json に本文を載せるトピック種別と、1記事あたりの本文の上限文字数
+    BODY_TOPIC_TYPES = {'scout_meeting'}
+    ARTICLE_BODY_MAX_CHARS = 4000
 
     def __init__(self, dummy_mode: bool = False):
         self.dummy_mode, self.supabase = _init_supabase_client(dummy_mode=dummy_mode)
@@ -1366,6 +1369,39 @@ class SupabaseDraftWatchCandidateStore:
         except Exception as e:
             print(f"[DB] scout_comments 取得エラー: {e}")
             return []
+
+    def fetch_article_bodies_for_urls(self, source_urls: List[str]) -> List[Dict[str, Any]]:
+        """
+        記事本文を取得する。スカウト会議記事のように、注目度シグナルのevidence文だけでは
+        絞り込み人数・層別内訳・名前が挙がった選手などの主要な事実が落ちてしまうトピックで使う。
+        """
+        if self.dummy_mode or self.supabase is None or not source_urls:
+            return []
+        try:
+            response = (
+                self.supabase
+                .table('crawled_articles')
+                .select('url,source,title,published_at,body')
+                .in_('url', sorted(set(source_urls)))
+                .execute()
+            )
+        except Exception as e:
+            print(f"[DB] crawled_articles 本文取得エラー: {e}")
+            return []
+
+        bodies = []
+        for row in response.data or []:
+            body = self._to_optional_str(row.get('body'))
+            if not body:
+                continue
+            bodies.append({
+                'url': row.get('url'),
+                'source': row.get('source'),
+                'title': row.get('title'),
+                'published_at': str(row.get('published_at'))[:10] if row.get('published_at') else None,
+                'body': body[:self.ARTICLE_BODY_MAX_CHARS],
+            })
+        return bodies
 
     def _resolve_event_date(self, source_url: str, player_name: Optional[str], published_at: Any) -> Tuple[Optional[str], Optional[str]]:
         """
@@ -1822,6 +1858,14 @@ class SupabaseDraftWatchCandidateStore:
             'sources': source_entries,
             'warnings': [],
         }
+
+        # スカウト会議の記事は、絞り込み人数・高校生/大学社会人の内訳・1位候補として名前が挙がった
+        # 選手といった主要な事実が本文にしかなく、evidence文だけでは記事が痩せる。該当トピックのみ
+        # 本文を素材として渡す（記事化ルールは ai/gemini.py 側のプロンプトで統制する）。
+        if topic_type in self.BODY_TOPIC_TYPES:
+            article_bodies = self.fetch_article_bodies_for_urls(source_urls)
+            if article_bodies:
+                summary_json['article_bodies'] = article_bodies
 
         base_score = max((self._to_int_or_zero(s.get('score')) for s in related_signals), default=0)
         multi_source_bonus = min(max(len(source_urls) - 1, 0), 3)

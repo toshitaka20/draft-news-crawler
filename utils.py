@@ -203,6 +203,26 @@ ALL_NPB_TEAM_KEYS = [
     'lions', 'fighters', 'marines', 'hawks', 'buffaloes', 'eagles',
 ]
 
+# team_key から記事表示用の球団名への逆引き（JAPANESE_TEAM_NAMESの並び順で最初に出た表記を採用）。
+TEAM_KEY_TO_NAME: Dict[str, str] = {}
+for _team_name in JAPANESE_TEAM_NAMES:
+    _team_key = TEAM_NAME_TO_KEY.get(_team_name)
+    if _team_key and _team_key not in TEAM_KEY_TO_NAME:
+        TEAM_KEY_TO_NAME[_team_key] = _team_name
+
+
+def team_display_name(team_key: Optional[str]) -> Optional[str]:
+    """
+    team_key（fighters など）を記事に載せる球団名（日本ハム など）へ戻す。
+    球団を特定しない 'other' は None を返し、対応表に無いものは元の値をそのまま使う。
+    """
+    if not team_key:
+        return None
+    key = team_key.strip()
+    if not key or key == 'other':
+        return None
+    return TEAM_KEY_TO_NAME.get(key, key)
+
 
 def normalize_team_key(team_name: Optional[str]) -> Optional[str]:
     """
