@@ -90,6 +90,72 @@
 | `update_at` | `timestamptz` |  Nullable |
 | `source_url` | `text` |  Nullable |
 
+## Table `scout_meeting_notes`
+
+球団ごとのスカウト会議・編成方針の報道を、**会議単位のナラティブ**として保存する。
+
+Draft-Watch の `/scouts/[team]/[year]` ページ「スカウト会議・編成方針」セクションの元データ。サイト側はテーブルを直接selectせず、DB関数 `get_team_meeting_notes(p_team_key, p_draft_year)`（SECURITY DEFINER）経由で読む（draft-watchリポ `lib/data.ts` の `getTeamMeetingNotes`）。
+
+### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary, default `gen_random_uuid()` |
+| `team_key` | `text` | NOT NULL。`fighters` / `carp` / `tigers` などの球団キー |
+| `draft_year` | `int4` | NOT NULL |
+| `meeting_date` | `date` | Nullable（会議日が特定できない報道では空） |
+| `article_date` | `date` | Nullable。報道日 |
+| `content` | `text` | NOT NULL。会議内容の要約（絞り込み人数・補強方針・挙がった選手名など） |
+| `source_name` | `text` | Nullable。媒体名（例: 日刊スポーツ、スポニチ、道新スポーツ） |
+| `source_url` | `text` | Nullable |
+| `confidence` | `text` | Nullable。実データで使われている値は `high` / `medium` |
+| `created_at` | `timestamptz` | default `now()` |
+
+### Notes
+
+- 同一の会議を複数媒体が報じた場合は媒体ごとに1行入れてよい（日本ハムの2026-02-12は道新スポーツとデイリースポーツで2行ある）。
+- サイト表示は `meeting_date`（無ければ `article_date`）の降順。
+- CHECK制約の有無は未確認。上記の値はいずれも実データで観測されたもの。
+
+## Table `scout_meeting_mentions`
+
+スカウト会議で名前が挙がった**選手単位**の言及を保存する。`scout_meeting_notes` が「会議そのもの」、こちらが「その会議で誰の名前が挙がったか」という分担。
+
+`/scouts/[team]/[year]` ページの「注目選手リストアップ」で、DB関数 `get_team_listup(p_team_key, p_draft_year)` 経由で視察・スカウトコメントと選手単位に名寄せされ、会議バッジと `meeting_note` として表示される（draft-watchリポ `lib/data.ts` の `getTeamListup`）。
+
+### Columns
+
+| Name | Type | Constraints |
+|------|------|-------------|
+| `id` | `uuid` | Primary, default `gen_random_uuid()` |
+| `team_key` | `text` | NOT NULL |
+| `draft_year` | `int4` | NOT NULL |
+| `player_id` | `uuid` | NOT NULL, references `players(id)` |
+| `player_name` | `text` | Nullable。表示・照合用の冗長カラム |
+| `meeting_date` | `date` | Nullable |
+| `article_date` | `date` | Nullable |
+| `mention_type` | `text` | Nullable。実データの値は下記参照 |
+| `note` | `text` | Nullable。その会議でどう言及されたかの説明文 |
+| `confidence` | `text` | Nullable。実データで使われている値は `high` / `medium` / `low` |
+| `source_name` | `text` | Nullable |
+| `source_url` | `text` | Nullable |
+| `created_at` | `timestamptz` | default `now()` |
+
+### mention_type の値（実データで観測されるもの）
+
+| 値 | 意味 |
+|---|---|
+| `scout_meeting_listed` | 会議で指名候補としてリストアップされた／名前が挙がった |
+| `scout_meeting_checked` | 会議で映像確認・評価の確認対象になった |
+| `reported_listed` | 会議の場ではないが、報道でその球団のリストアップとして名前が挙がった |
+
+### Notes
+
+- `player_id` が NOT NULL なので、`players` に存在しない選手は登録できない。先に選手を作るか `player_candidates` から昇格させる必要がある。
+- `player_name` は実データではスペース無し表記（例: `織田翔希`）。`players.name` はスペース有り（`織田 翔希`）なので、この列での突き合わせはしないこと。
+- 「1位候補に含まれているとみられる」のような推量報道は `confidence='medium'` とし、`note` に推定である旨を明記する運用。
+- CHECK制約の有無は未確認。上記の値はいずれも実データで観測されたもの。
+
 ## Table `articles`
 
 ### Columns
