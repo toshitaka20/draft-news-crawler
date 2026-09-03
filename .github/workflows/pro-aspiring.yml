@@ -1,0 +1,59 @@
+name: Pro Aspiring Roster (3時間ごと・10月末まで)
+
+on:
+  schedule:
+    # 3時間ごと（UTC 0,3,6,9,12,15,18,21 → JST 9,12,15,18,21,0,3,6時）。
+    # 実行期間（〜10/31 JST）の判定は main_pro_aspiring.py 側で行い、期間外は即終了する。
+    - cron: '0 */3 * * *'
+  workflow_dispatch:  # 手動実行可能
+    inputs:
+      dry_run:
+        description: 'DB・Issueへ書き込まずに結果だけ表示する'
+        type: boolean
+        default: false
+      force:
+        description: '実行期間（〜10/31）を過ぎていても実行する'
+        type: boolean
+        default: false
+
+# 志望届の未登録選手をIssue化するため issues への書き込みが必要。
+permissions:
+  contents: read
+  issues: write
+
+# 3時間ごとの実行が重ならないようにする（重複実行でIssueが二重に作られるのを防ぐ）。
+concurrency:
+  group: pro-aspiring
+  cancel-in-progress: false
+
+jobs:
+  run-pro-aspiring:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pro aspiring roster batch
+        run: |
+          python main_pro_aspiring.py \
+            ${{ inputs.dry_run && '--dry-run' || '' }} \
+            ${{ inputs.force && '--force' || '' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # GITHUB_ 始まりの環境変数は予約済みで設定できないため GH_TOKEN を使う。
+          # リポジトリ名は Actions が GITHUB_REPOSITORY を自動で入れてくれる。
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

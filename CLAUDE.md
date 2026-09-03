@@ -16,6 +16,10 @@ PYTHONPATH=. venv/bin/python3 main_draft_watch.py
 PYTHONPATH=. venv/bin/python3 main_draft_watch.py --regenerate          # 既存draft候補を再生成
 PYTHONPATH=. venv/bin/python3 main_draft_watch.py --regenerate-missing  # 本文未生成のみ
 
+# プロ志望届トラッキング（3時間ごとcron・10月末まで）。名簿記事1本を更新し続ける
+PYTHONPATH=. venv/bin/python3 main_pro_aspiring.py
+PYTHONPATH=. venv/bin/python3 main_pro_aspiring.py --dry-run    # DB・Issueに書かず結果だけ表示
+
 # 選手候補の昇格（Phase 6）。リサーチ・JSON作成は Claude Code が担当
 PYTHONPATH=. venv/bin/python3 main_promote.py --mode list                                       # 候補一覧（pending）
 PYTHONPATH=. venv/bin/python3 main_promote.py --mode promote --file output/promote_drafts/xxx.json  # import+commit一発
@@ -49,5 +53,6 @@ JSONルール:
 ## ドキュメント
 
 - データパイプライン全体: `docs/data_pipeline_strategy.md`
+- プロ志望届トラッキング: `docs/pro_aspiring_tracking.md`
 - DBスキーマ: `draft_watch_db.md`
 - Phase 6 詳細設計: `docs/phase6_player_promotion_design.md`
