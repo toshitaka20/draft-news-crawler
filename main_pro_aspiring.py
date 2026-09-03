@@ -26,6 +26,7 @@ from database.pro_aspiring_store import ProAspiringStore
 from database.supabase_client import now_jst
 from integrations.github_issues import GitHubIssueClient
 from pro_aspiring_article import build_excerpt, build_markdown, build_title
+from pro_aspiring_site_article import update_article_content, update_article_meta
 from scraper.pro_aspiring import fetch_all_pro_aspiring
 
 DEFAULT_YEAR = 2026
@@ -288,6 +289,30 @@ def sync_tracker_issue(
     return stats
 
 
+def sync_published_article(store: ProAspiringStore, article_id: str, records: List[Dict[str, Any]],
+                           players: List[Dict[str, Any]], year: int, updated_at,
+                           counts: Dict[str, int]) -> None:
+    """公開記事の表・人数・日付だけを差し替える（人が書いた解説文には触らない）。"""
+    article = store.fetch_article(article_id)
+    if not article:
+        print(f"[記事] 公開記事が見つからない: {article_id}")
+        return
+
+    content, updated_blocks = update_article_content(
+        article.get('content') or '', records, players, year, updated_at, counts)
+    fields: Dict[str, Any] = update_article_meta(article, counts, updated_at)
+    if content != (article.get('content') or ''):
+        fields['content'] = content
+
+    if not fields:
+        print(f"[記事] 公開記事に変更なし（{article_id}）")
+        return
+
+    ok = store.update_article(article_id, fields)
+    changed = updated_blocks + [k for k in fields if k != 'content']
+    print(f"[記事] 公開記事を更新{'' if ok else 'できず'}（{article_id}）: {', '.join(changed) or '本文'}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='プロ志望届 追跡バッチ')
     parser.add_argument('--year', type=int, default=DEFAULT_YEAR, help='対象年（既定: 2026）')
@@ -297,7 +322,9 @@ def main() -> None:
     parser.add_argument('--force', action='store_true', help='実行期間外でも実行する')
     parser.add_argument('--print-markdown', action='store_true', help='生成した記事本文を表示する')
     parser.add_argument('--no-publish-sync', action='store_true',
-                        help='公開済み記事（articles）の本文を上書きしない（手で編集した公開記事を守りたいとき）')
+                        help='公開記事（articles）を更新しない')
+    parser.add_argument('--bind-article',
+                        help='管理画面で作った公開記事のID（articles.id）を更新対象として結びつける（初回のみ）')
     args = parser.parse_args()
 
     year = args.year
@@ -429,10 +456,15 @@ def main() -> None:
         'updated_at': updated_at.isoformat(),
     }
 
+    if args.bind_article:
+        # 管理画面で作った公開記事を、このバッチの更新対象として結びつける（初回だけ）。
+        fields['published_article_id'] = args.bind_article
+        fields['status'] = 'published'
+
     if candidate:
         store.update_candidate(candidate['id'], fields)
         candidate_id = candidate['id']
-        published_article_id = candidate.get('published_article_id')
+        published_article_id = args.bind_article or candidate.get('published_article_id')
         print(f"\n[記事] 既存候補を更新: {candidate_id}（status={candidate.get('status')}）")
     else:
         record = {
@@ -449,23 +481,24 @@ def main() -> None:
             print("[エラー] 記事候補の作成に失敗した。")
             return
         candidate_id = created['id']
-        published_article_id = None
+        published_article_id = args.bind_article
         print(f"\n[記事] 新規候補を作成: {candidate_id}")
 
     store.add_sources(candidate_id, [s['url'] for s in source_links])
 
-    # 5. 公開済みなら公開記事側も同期し、登場選手を紐付ける
+    # 5. 公開記事の「日々更新される部分」だけを差し替え、登場選手を紐付ける
     if published_article_id:
         if args.no_publish_sync:
-            print(f"[記事] --no-publish-sync のため公開記事の本文は更新しない（{published_article_id}）")
+            print(f"[記事] --no-publish-sync のため公開記事は更新しない（{published_article_id}）")
         else:
-            synced = store.sync_published_article(published_article_id, title, markdown, excerpt)
-            print(f"[記事] 公開記事の同期: {'完了' if synced else '失敗'}（{published_article_id}）")
+            sync_published_article(store, published_article_id, records, players, year,
+                                   updated_at, counts)
         linked = store.sync_article_players(published_article_id, summary_json['linked_player_ids'])
         print(f"[記事] 選手の紐付け追加: {linked}件")
     else:
-        print("[記事] 未公開のため article_players の紐付けは公開後に行う"
-              f"（紐付け対象 {len(summary_json['linked_player_ids'])}人は summary_json に記録済み）")
+        print("[記事] 公開記事が未設定のため本文同期・選手紐付けはスキップ"
+              f"（紐付け対象 {len(summary_json['linked_player_ids'])}人は summary_json に記録済み）"
+              "\n       公開記事があるなら --bind-article <articles.id> で一度結びつける")
 
     print("\n=== 完了 ===")
     print(f"名簿 {len(records)}人 / 登録済み {len(matched)}人 / 未登録 {len(unmatched)}人 / "

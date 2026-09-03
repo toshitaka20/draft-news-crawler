@@ -32,7 +32,7 @@ class ProAspiringStore:
             response = (
                 self.supabase
                 .table('players')
-                .select('id,name,name_kana,team,category,draft_year,declared')
+                .select('id,name,name_kana,team,category,draft_year,declared,rank,position')
                 .range(start, start + PAGE_SIZE - 1)
                 .execute()
             )
@@ -132,18 +132,31 @@ class ProAspiringStore:
 
     # ---------------------------------------------- 公開記事（articles）との同期
 
-    def sync_published_article(self, article_id: str, title: str, content: str, excerpt: str) -> bool:
-        """
-        候補が公開済みの場合、公開記事本体の本文も同じ内容へ更新する。
-        名簿は提出があるたびに増えるので、公開後も中身を追随させる必要がある。
-        """
+    def fetch_article(self, article_id: str) -> Optional[Dict[str, Any]]:
         if self.dummy_mode or self.supabase is None:
+            return None
+        try:
+            response = (
+                self.supabase
+                .table('articles')
+                .select('id,title,excerpt,meta_description,content,is_published')
+                .eq('id', article_id)
+                .limit(1)
+                .execute()
+            )
+            rows = response.data or []
+            return rows[0] if rows else None
+        except Exception as e:
+            print(f"[DB] articles 取得エラー: {e}")
+            return None
+
+    def update_article(self, article_id: str, fields: Dict[str, Any]) -> bool:
+        """公開記事の指定フィールドだけを更新する（本文は差し替え済みのものを渡す）。"""
+        if not fields or self.dummy_mode or self.supabase is None:
             return False
         try:
             self.supabase.table('articles').update({
-                'title': title,
-                'content': content,
-                'excerpt': excerpt,
+                **fields,
                 'updated_at': now_jst().isoformat(),
             }).eq('id', article_id).execute()
             return True

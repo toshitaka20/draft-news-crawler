@@ -22,15 +22,20 @@
 PYTHONPATH=. venv/bin/python3 main_pro_aspiring.py                 # 通常実行
 PYTHONPATH=. venv/bin/python3 main_pro_aspiring.py --dry-run       # DB・Issueに書かず結果と記事本文を表示
 PYTHONPATH=. venv/bin/python3 main_pro_aspiring.py --no-issues     # Issueだけ触らない
-PYTHONPATH=. venv/bin/python3 main_pro_aspiring.py --no-publish-sync  # 公開済み記事の本文は上書きしない
+PYTHONPATH=. venv/bin/python3 main_pro_aspiring.py --no-publish-sync  # 公開記事を更新しない
 PYTHONPATH=. venv/bin/python3 main_pro_aspiring.py --force         # 実行期間（〜10/31）外でも実行
+PYTHONPATH=. venv/bin/python3 main_pro_aspiring.py --bind-article <articles.id>  # 更新対象の公開記事を結び直す
 PYTHONPATH=. venv/bin/python3 test/test_pro_aspiring_matching.py   # 名寄せのテスト
+PYTHONPATH=. venv/bin/python3 test/test_pro_aspiring_article.py    # 公開記事の部分更新のテスト
 ```
 
 GitHub Actions: `.github/workflows/pro-aspiring.yml`（`cron: '0 */3 * * *'`）。
 10/31（JST）を過ぎた実行はスクリプト側が即終了するので、ワークフローを止め忘れても副作用はない。
 
-## 記事の更新方法
+## 記事候補（draft_watch_article_candidates）の更新方法
+
+公開記事の元ネタ・履歴として、候補行も毎回更新する（公開記事の本文はこの下書きとは別に、
+後述の部分更新で差し替える）。
 
 - `draft_watch_article_candidates` の `topic_key = 'other:pro_aspiring:{year}'` の**1行を毎回上書き**する。
   行が無ければ `status='draft'` で作る。以後 status は触らない（人のレビュー結果を尊重する）。
@@ -38,9 +43,35 @@ GitHub Actions: `.github/workflows/pro-aspiring.yml`（`cron: '0 */3 * * *'`）�
   各エントリの `first_seen_at` も `summary_json` に持つので、状態管理用のテーブルは増やしていない。
 - `review_note` は `<!-- pro-aspiring auto -->` マーカーより後ろだけを自動で書き換える。
   マーカーより前に書いた人手のメモは残る。
-- **公開後**（`published_article_id` が入った後）は `articles.title/content/excerpt` も同じ内容へ同期する。
-  名簿は10月まで増え続けるので、公開記事を放置すると古い人数のまま残るため。
-  公開記事を手で書き換えて運用したくなったら `--no-publish-sync` を付ける。
+## 公開記事（articles）の日々更新
+
+公開記事は人が書いたリード・解説・注記を含むので、**本文をまるごと上書きしない**。
+見出しを目印に、機械が持っているブロックだけを差し替える（`pro_aspiring_site_article.py`）。
+
+対象記事: `articles.id = aa9dcd7b-de93-435b-bca8-53a73f5d1cd4`
+（`draft_watch_article_candidates.published_article_id` に保存。別の記事に付け替えるときは
+`--bind-article <articles.id>` を1回付けて実行する）
+
+機械が書き換えるのは以下だけ。それ以外の段落・注記・解説は一切触らない。
+
+| ブロック | 目印 | 中身 |
+|---|---|---|
+| リードの人数 | `**N月N日時点の提出者は高校生N人・大学生N人の合計N人**` | 日付と人数 |
+| 注記の時点 | `（20NN年N月N日…時点）` | 名簿ページを読んだ時刻 |
+| 高校生一覧 | `## …高校生…一覧…` | 見出しの `（N人）` と直後の表 |
+| 大学生一覧 | `## …大学生…一覧…` | 同上 |
+| 未提出の人数 | `N月N日時点で一覧に名前が無い高校生はN人、大学生はN人です` | 人数 |
+| 未提出（高校生／大学生） | `## …まだ提出していない…` 配下の `### 高校生` / `### 大学生` | 直後の表 |
+| タイトル・抜粋・メタ | `（N月N日時点）` / `高校生N人・大学生N人` / `N月N日時点は…計N人` | 日付と人数のみ |
+
+- **目印の見出しが見つからないブロックは何もせずスキップ**してログに出す。
+  記事の構成を変えたときに壊さないための保険。逆に、見出しの文言を大きく変えると
+  そのブロックは更新されなくなるので、`## 高校生…一覧` のようなキーワードは残しておく。
+- 表の並びは連盟の公表順のまま。ポジションは `players.position`、評価は `players.rank`
+  （90=S / 80=A / 70=B / 60=C / 50=D / 40=E / 30=F、それ以外は「—」）を引く。
+- 「まだ提出していない主な上位候補」は `players` の評価B以上（rank>=70）かつ名簿に未掲載の選手を
+  評価の高い順に並べる（表は各10人まで、人数は全件）。選手が提出すると翌回の実行で自動的に消える。
+- 公開記事を触らせたくないときは `--no-publish-sync`。
 
 ## 選手の紐付けと declared
 
