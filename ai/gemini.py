@@ -349,10 +349,17 @@ def process_articles_with_ai(articles: List[Dict[str, Any]]) -> List[Dict[str, A
                 # スカウトコメントをCSVパースして別シート用データに追加
                 if scout_csv:
                     try:
-                        reader = csv.reader(scout_csv.strip().splitlines())
-                        rows_list = list(reader)
-                        # 1行目はヘッダーなのでスキップ
-                        for row in rows_list[1:]:
+                        # Claudeは出力を ``` で囲むことがあるので、その行は捨てる
+                        lines = [l for l in scout_csv.strip().splitlines() if not l.strip().startswith('```')]
+                        # 「, "コメント"」のようにカンマ後の空白に続く引用符も正しく外す
+                        rows_list = list(csv.reader(lines, skipinitialspace=True))
+                        for row in rows_list:
+                            # ヘッダー行は位置ではなく中身で判定してスキップ
+                            if row and row[0].strip() == '選手名':
+                                continue
+                            # コメントに半角カンマが入って列が増えた場合は、コメント列にまとめ直す
+                            if len(row) > 7:
+                                row = row[:4] + [','.join(row[4:-2])] + row[-2:]
                             if len(row) == 7:
                                 # 記事公開日のフォーマットを統一（timestamp with time zone形式）
                                 from utils import format_timestamp
