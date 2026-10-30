@@ -38,9 +38,8 @@ AI_KEYWORDS = ["draft", "scout", "ドラフト", "スカウト", "熱視線"]
 SPREADSHEET_NAME = 'DraftNews'
 CREDENTIALS_FILE = 'credentials.json'
 
-# Gemini API設定
-GEMINI_API_KEY = os.getenv('GOOGLE_GENAI_API_KEY', '')
-GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash-lite')
+# Claude API設定（APIキーは anthropic SDK が環境変数 ANTHROPIC_API_KEY から直接読む）
+ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-haiku-5-5')
 
 # スクレイピング設定
 MAX_ARTICLES_PER_SOURCE = 20

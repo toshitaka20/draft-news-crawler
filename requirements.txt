@@ -3,7 +3,7 @@ beautifulsoup4
 requests
 gspread
 oauth2client
-google-generativeai
+anthropic
 google-auth
 supabase
 python-dateutil

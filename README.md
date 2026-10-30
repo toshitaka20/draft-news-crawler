@@ -33,7 +33,7 @@
    base64 -i credentials.json
    ```
 
-2. **GOOGLE_GENAI_API_KEY**: Gemini API認証キー
+2. **ANTHROPIC_API_KEY**: Claude API認証キー（モデルは ANTHROPIC_MODEL、既定 claude-haiku-5-5）
 
 3. **SUPABASE_URL**: SupabaseプロジェクトのURL
    ```

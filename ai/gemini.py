@@ -1,32 +1,42 @@
 """
-Gemini API連携・コメント抽出
+Claude API連携・コメント抽出
+（もとはGeminiで動かしていたため、モジュール名・関数名に gemini が残っている）
 """
 
-import google.generativeai as genai  # type: ignore
+import anthropic
 import csv
 import json
 import re
 from typing import List, Dict, Any, Optional
-from config import GEMINI_API_KEY, GEMINI_MODEL
+from config import ANTHROPIC_MODEL
 from utils import normalize_team_key, ALL_NPB_TEAM_KEYS, normalize_player_key, team_display_name
 
-def setup_gemini():
+_client: Optional[anthropic.Anthropic] = None
+
+
+def generate_text(prompt: str) -> str:
     """
-    Gemini APIの初期設定
+    Claudeにプロンプトを1回投げて本文テキストを返す。APIキーは環境変数 ANTHROPIC_API_KEY から読む。
     """
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEYが設定されていません")
-    
-    genai.configure(api_key=GEMINI_API_KEY)  # type: ignore
-    return genai.GenerativeModel(GEMINI_MODEL)  # type: ignore
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic()
+
+    response = _client.messages.create(
+        model=ANTHROPIC_MODEL,
+        max_tokens=16000,
+        output_config={"effort": "medium"},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    if response.stop_reason == "refusal":
+        raise RuntimeError(f"Claudeが応答を拒否しました: {response.stop_details}")
+    return "".join(block.text for block in response.content if block.type == "text")
 
 def extract_scout_comments_with_gemini(article_text: str, title: str, published: str, link: str) -> Optional[str]:
     """
     記事からスカウトコメントを抽出（超高精度版）
     """
     try:
-        model = setup_gemini()
-        
         prompt = f"""
 あなたはプロ野球のドラフト評価コメント抽出AIです。
 以下の記事本文から、NPB・MLB球団のスカウト、編成担当、GMなどのドラフト評価担当者が、特定の選手について述べた評価コメント・発言だけを抽出してください。
@@ -145,11 +155,10 @@ URL: {link}
 【本文】
 {article_text}
 """
-        response = model.generate_content(prompt)
-        return response.text
+        return generate_text(prompt)
         
     except Exception as e:
-        print(f"[Generative AI Geminiエラー] {e}")
+        print(f"[Claude スカウトコメント抽出エラー] {e}")
         return None
 
 
@@ -210,8 +219,6 @@ def extract_player_candidates_with_gemini(article_text: str, title: str, publish
     記事からDraft-Watch未登録候補になりうる選手情報を抽出する。
     """
     try:
-        model = setup_gemini()
-
         prompt = f"""
 あなたは日本野球ドラフト候補の構造化データ抽出AIです。
 以下の記事から、Draft-Watchの選手DBに登録・確認すべき選手候補だけを抽出してください。
@@ -257,11 +264,10 @@ URL: {link}
 【本文】
 {article_text}
 """
-        response = model.generate_content(prompt)
-        return _parse_json_array(response.text)
+        return _parse_json_array(generate_text(prompt))
 
     except Exception as e:
-        print(f"[Generative AI Gemini 選手候補抽出エラー] {e}")
+        print(f"[Claude 選手候補抽出エラー] {e}")
         return []
 
 
@@ -270,8 +276,6 @@ def extract_scout_visits_with_gemini(article_text: str, title: str, published: s
     記事から「どの球団が、どの選手を、何人で、いつ視察したか」という視察情報を抽出する。
     """
     try:
-        model = setup_gemini()
-
         prompt = f"""
 あなたはプロ野球のスカウト視察情報抽出AIです。
 以下の記事本文から、「どの球団が」「どの選手を」「何人で」「いつ」視察したかという視察情報をすべて抽出してください。
@@ -307,11 +311,10 @@ URL: {link}
 【本文】
 {article_text}
 """
-        response = model.generate_content(prompt)
-        return _parse_json_array(response.text)
+        return _parse_json_array(generate_text(prompt))
 
     except Exception as e:
-        print(f"[Generative AI Gemini 視察情報抽出エラー] {e}")
+        print(f"[Claude 視察情報抽出エラー] {e}")
         return []
 
 
@@ -733,8 +736,6 @@ def generate_draft_watch_article_with_gemini(summary_json: Dict[str, Any]) -> Op
     沿った独自記事として生成する。
     """
     try:
-        model = setup_gemini()
-
         prompt = f"""
 あなたはプロ野球ドラフト専門メディア「Draft-Watch」の記者AIです。
 以下の構造化データ（複数の外部記事から整理済みの素材）をもとに、Draft-Watch独自の下書き記事を作成してください。
@@ -873,8 +874,7 @@ JSONオブジェクトのみを返してください。説明文、Markdownの�
 【構造化データ】
 {json.dumps(summary_json, ensure_ascii=False, indent=2)}
 """
-        response = model.generate_content(prompt)
-        parsed = _parse_json_object(response.text)
+        parsed = _parse_json_object(generate_text(prompt))
         if not parsed:
             return None
 
@@ -890,5 +890,5 @@ JSONオブジェクトのみを返してください。説明文、Markdownの�
         return {'title': title, 'markdown': markdown, 'excerpt': excerpt}
 
     except Exception as e:
-        print(f"[Generative AI Gemini Draft-Watch記事生成エラー] {e}")
+        print(f"[Claude Draft-Watch記事生成エラー] {e}")
         return None

@@ -1226,6 +1226,8 @@ class SupabaseDraftWatchCandidateStore:
 
     DEFAULT_LOOKBACK_HOURS = 30
     GENERATION_THRESHOLD = 1
+    # 下書き本文のAI生成。記事化は人（Claude Code）が元記事から書き直すので止めている（候補と元記事URLを溜めるだけ）。
+    GENERATE_DRAFTS = False
     NEAR_MATCH_DAYS = 3
     # summary_json に本文を載せるトピック種別と、1記事あたりの本文の上限文字数
     BODY_TOPIC_TYPES = {'scout_meeting'}
@@ -1877,7 +1879,7 @@ class SupabaseDraftWatchCandidateStore:
             'importance_score': importance_score,
         }
 
-        if importance_score >= self.GENERATION_THRESHOLD and candidate.get('status') == 'draft':
+        if self.GENERATE_DRAFTS and importance_score >= self.GENERATION_THRESHOLD and candidate.get('status') == 'draft':
             from ai.gemini import generate_draft_watch_article_with_gemini
             generated = generate_draft_watch_article_with_gemini(summary_json)
             if generated:
