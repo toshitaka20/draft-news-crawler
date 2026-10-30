@@ -2,7 +2,7 @@ name: Draft-Watch Article Candidate Batch (Daily Morning)
 
 on:
   schedule:
-    - cron: '0 21 * * *'  # JST 6:00（UTC前日21:00） — その日最初の記事収集（regular 9時 / yahoo 5時〜）の前に、前回実行以降に溜まったシグナルをまとめて処理する
+    - cron: '13 21 * * *'  # JST 6:13（UTC前日21:13。毎時0分は混んで遅れるのでずらしている） — その日最初の記事収集（regular 9時 / yahoo 5時〜）の前に、前回実行以降に溜まったシグナルをまとめて処理する
   workflow_dispatch:  # 手動実行可能
 
 jobs:

@@ -2,9 +2,10 @@ name: Regular News Scraper (5 Sources)
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # JST 9:00（UTCで0:00）
-    - cron: '0 6 * * *'  # JST 15:00（UTCで6:00）
-    - cron: '0 12 * * *' # JST 21:00（UTCで12:00）
+    # 毎時0分はGitHub側が混んで遅延・スキップが多いので47分にずらしている
+    - cron: '47 0 * * *'  # JST 9:47（UTCで0:47）
+    - cron: '47 6 * * *'  # JST 15:47（UTCで6:47）
+    - cron: '47 12 * * *' # JST 21:47（UTCで12:47）
   workflow_dispatch:  # 手動実行可能
 
 jobs:
