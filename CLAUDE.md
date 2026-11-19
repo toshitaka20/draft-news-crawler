@@ -45,6 +45,7 @@ JSONルール:
 - **投手成績と打撃成績は別レコード**にする（1行に混在させない）。投手行は `innings`/`era`/`strikeouts` 等、打撃行は `at_bats`/`hits`/`avg` 等の列で区別される。二刀流は投手行と打撃行を両方並べる。`stats.period`（段階 high_school/university/company）は commit 時に選手 category から自動付与されるので JSON に書かない。
 - 指標（防御率・WHIP・出塁率・長打率・OPS）は**アプリが内訳から再計算して表示する**ため、計算済み値だけでなく**内訳を必ず入れる**。投手: `earned_runs`(自責点)/`hits_allowed`(被安打)/`walks`(与四球)/`hit_by_pitch`(与死球)/`walks_plus_hit_by_pitch`(与四死球)。打撃: `walks`/`hit_by_pitch`/`sacrifice_flies`/`doubles`/`triples`/`batter_strikeouts`(打者三振)。内訳が無いと画面で防御率0などになる。
 - `achievements.type`: `title` / `national_tournament` / `samurai_japan` のいずれか。
+- `achievements.tournament_name` / `result` は**短い表記**で書く（draft-watch の選手ページはスマホで大会名が1行で切れるため）。例：`甲子園`・`センバツ`・`神宮大会`・`全日本選手権`（大学）・`日本選手権`（社会人）・`都市対抗`・`U-18W杯`・`WCBC`・`大学代表候補合宿`・`東都1部春季`（連盟の短い名前＋部＋季、空白なし）／結果は `優勝`・`ベスト8`・`ベストナイン（外野）`・`MVP`・`首位打者`・代表入りは `選出`。「第N回」や試合の説明は付けない。長く書いても commit 時に `database/achievement_labels.py` が短い表記に変換する。
 - `rank`: 運営が手動設定するため **0 固定**（リサーチで埋めない）。
 - `declared`: プロ志望表明または**進路の記載がなければ `true`**、進学・社会人入りなど**プロ以外の進路が判明していれば `false`**。
 - player フィールドは players テーブルに対応（`positions`→`position` / `throws`→`throw` / `bats`→`bat`）。値は**日本語で書いてOK**（commit時にコード変換する: category `大学`→`university` 等、throw/bat `右`→`R`/`左`→`L`/`両`→`S`、position は日本語のまま）。`career`（所属校歴 `["高校名","大学名"]`）や `bio`・`breaking_balls` など players の項目も忘れず埋める。`name_kana`（ふりがな）は DB側 **NOT NULL** なので必ず取得して入れる。

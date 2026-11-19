@@ -5,6 +5,8 @@ import hashlib
 from typing import List, Dict, Optional, Tuple, Any, Set
 from datetime import datetime, timezone, timedelta
 
+from database.achievement_labels import short_tournament_name, short_result
+
 # 日本時間（JST）のタイムゾーン
 JST = timezone(timedelta(hours=9))
 
@@ -2512,6 +2514,11 @@ class SupabasePlayerPromotionStore:
             row = {k: a[k] for k in self._ACHIEVEMENT_FIELDS if a.get(k) is not None}
             if not row:
                 continue
+            # draft-watch の選手ページ（スマホ）で切れないよう、短い表記にそろえる
+            if row.get('tournament_name'):
+                row['tournament_name'] = short_tournament_name(row['tournament_name'], row.get('type'), row.get('year'))
+            if row.get('result') is not None:
+                row['result'] = short_result(row['result'])
             row['player_id'] = player_id
             rows.append(row)
         return rows
