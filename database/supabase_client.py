@@ -538,19 +538,31 @@ class SupabasePlayerCandidateStore:
         try:
             # 氏名の表記ゆれ（スペース有無等）に対応するため name 完全一致では絞らず、
             # 既存候補を取得して正規化キー（_candidate_key）で突き合わせる。
-            response = (
-                self.supabase
-                .table('player_candidates')
-                .select('id,name,team,team_name,draft_year')
-                .execute()
-            )
+            # Supabase は1リクエスト最大1000行で打ち切るため、ページングで全件取る。
+            page_size = 1000
+            existing_rows: List[Dict[str, Any]] = []
+            start = 0
+            while True:
+                response = (
+                    self.supabase
+                    .table('player_candidates')
+                    .select('id,name,team,team_name,draft_year')
+                    .order('id')
+                    .range(start, start + page_size - 1)
+                    .execute()
+                )
+                page = response.data or []
+                existing_rows.extend(page)
+                if len(page) < page_size:
+                    break
+                start += page_size
             return {
                 self._candidate_key(
                     row.get('name') or '',
                     row.get('team') or row.get('team_name'),
                     self._to_int(row.get('draft_year')),
                 ): row['id']
-                for row in (response.data or [])
+                for row in existing_rows
                 if row.get('id') and row.get('name')
             }
         except Exception as e:
