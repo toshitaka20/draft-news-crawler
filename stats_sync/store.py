@@ -110,7 +110,15 @@ class StatsStore:
                 continue  # draft-watch に登録されていない選手
             fill_profile(ext)
             if not ext.full_name:
-                report.unmatched_profiles.append((ext, cands))
+                # フルネームが載っていない連盟（首都）：略称が名前の先頭と一致＋出身高校が一致で1人に決まれば採用
+                by_hs = [p for p in cands if ext.high_school
+                         and any(_hs_match(c, ext.high_school) for c in (p.get('career') or []))]
+                if len(by_hs) == 1:
+                    report.matches.append(Match(ext, by_hs[0], 'name'))
+                elif len(by_hs) > 1:
+                    report.ambiguous.append((ext, by_hs))
+                elif ext.source not in ('shuto',):
+                    report.unmatched_profiles.append((ext, cands))
                 continue
             exact = [p for p in cands if name_key(p['name']) == name_key(ext.full_name)]
             if len(exact) != 1:
@@ -221,7 +229,9 @@ def is_noop(change: Change) -> bool:
     if len(change.old_rows) != 1:
         return False
     old = change.old_rows[0]
-    same = all((old.get(k) or 0) == (change.new_row.get(k) or 0) for k in _COMPARE)
+    def norm(v):  # 0 と 0.0 は同じ、null（未発表）と 0 は別物として比べる
+        return None if v is None else float(v)
+    same = all(norm(old.get(k)) == norm(change.new_row.get(k)) for k in _COMPARE)
     return same and old.get('source') == change.new_row['source'] and old.get('tournament') == change.new_row['tournament']
 
 

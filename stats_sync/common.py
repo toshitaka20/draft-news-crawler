@@ -34,6 +34,18 @@ def fetch_html(url: str, timeout: int = 30) -> str:
     return resp.text
 
 
+def fetch_json(url: str, params: Optional[Dict] = None, timeout: int = 30):
+    """JSON を返す URL を取得する（fetch_html と同じく1件ずつ間をあける）。"""
+    global _last_request_at
+    wait = REQUEST_INTERVAL_SEC - (time.time() - _last_request_at)
+    if wait > 0:
+        time.sleep(wait)
+    resp = requests.get(url, params=params, headers={'User-Agent': USER_AGENT}, timeout=timeout)
+    _last_request_at = time.time()
+    resp.raise_for_status()
+    return resp.json()
+
+
 def soup_of(html: str) -> BeautifulSoup:
     return BeautifulSoup(html, 'html.parser')
 
@@ -135,23 +147,28 @@ class ExtPlayer:
 
 
 def batting_row(line: BattingLine) -> Dict:
-    """stats の打者行（投球列は0）。指標は内訳から計算して入れる（画面側でも再計算される）。"""
-    walks = line.walks or 0
-    hbp = line.hit_by_pitch or 0
-    sf = line.sacrifice_flies or 0
+    """stats の打者行（投球列は0）。指標は内訳から計算して入れる（画面側でも再計算される）。
+
+    連盟が出していない項目（首都の四死球・三振など）は 0 にせず null のまま入れる（画面では「-」）。
+    """
+    walks = line.walks
+    hbp = line.hit_by_pitch
+    sf = line.sacrifice_flies
     ab = line.at_bats or 0
     hits = line.hits or 0
     singles = hits - (line.doubles or 0) - (line.triples or 0) - (line.home_runs or 0)
     tb = singles + 2 * (line.doubles or 0) + 3 * (line.triples or 0) + 4 * (line.home_runs or 0)
     avg = safe_ratio(hits, ab, 3)
-    obp = safe_ratio(hits + walks + hbp, ab + walks + hbp + sf, 3)
-    slg = safe_ratio(tb, ab, 3)
+    obp = None
+    if walks is not None:
+        obp = safe_ratio(hits + walks + (hbp or 0), ab + walks + (hbp or 0) + (sf or 0), 3)
+    slg = safe_ratio(tb, ab, 3) if line.doubles is not None else None
     return {
         'games': line.games, 'at_bats': ab, 'hits': hits,
-        'home_runs': line.home_runs or 0, 'rbis': line.rbis or 0, 'steals': line.steals or 0,
-        'doubles': line.doubles or 0, 'triples': line.triples or 0,
+        'home_runs': line.home_runs, 'rbis': line.rbis, 'steals': line.steals,
+        'doubles': line.doubles, 'triples': line.triples,
         'walks': walks, 'hit_by_pitch': hbp, 'sacrifice_flies': sf,
-        'batter_strikeouts': line.strikeouts or 0,
+        'batter_strikeouts': line.strikeouts,
         'avg': avg, 'obp': obp, 'slg': slg,
         'ops': round(obp + slg, 3) if obp is not None and slg is not None else None,
         'innings': 0, 'era': None, 'strikeouts': 0, 'strikeouts_per_9': None, 'hits_allowed': 0,
@@ -168,20 +185,21 @@ def pitching_row(line: PitchingLine) -> Dict:
     if wph is None and (line.walks is not None or line.hit_by_pitch is not None):
         wph = (line.walks or 0) + (line.hit_by_pitch or 0)
     er = line.earned_runs or 0
+    so = line.strikeouts
     return {
         'games': line.games, 'at_bats': 0, 'hits': 0, 'home_runs': 0, 'rbis': 0, 'steals': 0,
-        'doubles': 0, 'triples': 0, 'walks': line.walks or 0, 'hit_by_pitch': line.hit_by_pitch or 0,
+        'doubles': 0, 'triples': 0, 'walks': line.walks or 0, 'hit_by_pitch': line.hit_by_pitch or 0,  # 投手行の打撃欄は0
         'sacrifice_flies': 0, 'batter_strikeouts': 0,
         'avg': None, 'obp': None, 'slg': None, 'ops': None,
         'innings': line.innings or 0,
         'era': safe_ratio(er * 9, ip, 2),
-        'strikeouts': line.strikeouts or 0,
-        'strikeouts_per_9': safe_ratio((line.strikeouts or 0) * 9, ip, 2),
-        'hits_allowed': line.hits_allowed or 0,
+        'strikeouts': so,
+        'strikeouts_per_9': safe_ratio(so * 9, ip, 2) if so is not None else None,
+        'hits_allowed': line.hits_allowed,
         'batting_avg_against': None,
-        'walks_plus_hit_by_pitch': wph or 0,
-        'bbh_per_9': safe_ratio((wph or 0) * 9, ip, 2),
-        'whip': safe_ratio((line.hits_allowed or 0) + (wph or 0), ip, 2),
+        'walks_plus_hit_by_pitch': wph,
+        'bbh_per_9': safe_ratio(wph * 9, ip, 2) if wph is not None else None,
+        'whip': safe_ratio((line.hits_allowed or 0) + wph, ip, 2) if wph is not None else None,
         'earned_runs': er,
     }
 

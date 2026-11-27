@@ -13,12 +13,14 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from database.supabase_client import _init_supabase_client
-from stats_sync import big6, tohto
+from stats_sync import big6, kansai, shuto, tohto
 from stats_sync.store import StatsStore, apply_changes, is_noop, plan_changes
 
 LEAGUES = {
     'big6': big6,
     'tohto': tohto,
+    'shuto': shuto,
+    'kansai': kansai,
 }
 
 JST = timezone(timedelta(hours=9))
