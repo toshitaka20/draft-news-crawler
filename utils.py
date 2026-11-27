@@ -1237,17 +1237,14 @@ def filter_yahoo_against_existing(yahoo_articles: List[Dict[str, Any]], threshol
     """
     print(f"[DEBUG] Yahoo独自記事フィルタリング開始: {len(yahoo_articles)}件")
     
-    # 既存5社の記事を取得
-    from sheets.google_sheets import get_existing_articles_by_source
-    
+    # 既存5社の直近記事をDBから取得（Yahooは速報の転載が多く、重複は同時期の記事に限られる）
+    from database.supabase_client import get_recent_crawled_articles
+
     existing_original_articles = []
     original_sources = ['スポニチ', 'スポーツ報知', '日刊スポーツ', 'サンスポ', '中日スポーツ']
-    
+
     try:
-        for source in original_sources:
-            source_articles = get_existing_articles_by_source(source)
-            existing_original_articles.extend(source_articles)
-        
+        existing_original_articles = get_recent_crawled_articles(original_sources, days=14)
         print(f"[DEBUG] 既存5社の記事数: {len(existing_original_articles)}件")
     except Exception as e:
         print(f"[DEBUG] 既存5社記事取得エラー: {e}")

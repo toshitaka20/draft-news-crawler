@@ -26,12 +26,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Decode Google Sheets credentials
-        run: |
-          echo "${{ secrets.GOOGLE_CREDENTIALS_BASE64 }}" | base64 -d > credentials.json
-          echo "✅ credentials.json created successfully"
-          ls -la credentials.json
-
       - name: Run Yahoo! Sports Navi scraper
         run: python main_yahoo_sponavi.py
         env:

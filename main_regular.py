@@ -10,7 +10,6 @@ from scraper.nikkan_sports import fetch_all_nikkan_sports_articles
 from scraper.sanspo import fetch_all_sanspo_articles
 from scraper.chunichi import fetch_all_chunichi_articles
 from ai.gemini import process_articles_with_ai, process_player_candidates_with_ai, process_scout_visits_with_ai, derive_scout_visits_from_comments
-from sheets.google_sheets import update_sheets, get_existing_urls_by_source
 from database.supabase_client import (
     get_existing_crawled_urls_by_source,
     insert_attention_signals,
@@ -23,15 +22,8 @@ from utils import smart_deduplicate_articles
 from config import HOCHI_URLS
 
 def get_existing_urls_for_source(source: str) -> set:
-    """
-    DBを優先して既存URLを取得する。移行期間中はSheetsをfallbackにする。
-    """
-    db_urls = get_existing_crawled_urls_by_source(source)
-    if db_urls:
-        return db_urls
-
-    print(f"[DEBUG] DB既存URLが空のためSheets fallback: {source}")
-    return get_existing_urls_by_source(source)
+    """DB（crawled_articles）から既存URLを取得する。"""
+    return get_existing_crawled_urls_by_source(source)
 
 def fetch_hochi_all_categories(exclude_urls: set) -> List[Dict[str, Any]]:
     """
@@ -213,13 +205,8 @@ def main():
                     
             except Exception as e:
                 print(f"⚠️ スカウトコメントデータベース挿入エラー: {e}")
-                print("Googleスプレッドシートの更新のみ実行します...")
         else:
             print("スカウトコメントが見つかりませんでした。")
-        
-        # 15. Google Sheets更新
-        print("\n13. Google Sheets更新中...")
-        update_sheets(all_processed)
         
         print(f"\n=== 既存5社処理完了 ===")
         print(f"総記事数: {len(all_processed)}")
