@@ -12,7 +12,6 @@
 - **AIコメント抽出**: Google Gemini AIを使用してスカウトコメントを自動抽出
 - **選手データベース連携**: Supabaseデータベースから選手情報を取得
 - **SQL自動生成**: スカウトコメントをデータベースに挿入するSQL文を自動生成
-- **Google Sheets連携**: 記事情報とスカウトコメントをスプレッドシートに自動更新
 - **重複除去**: 既存記事との重複を自動チェック
 
 ## 対応メディア
@@ -27,7 +26,7 @@
 
 ### 必要なSecrets設定
 
-1. **GOOGLE_CREDENTIALS_BASE64**: Google Sheets API認証情報
+1. **GOOGLE_CREDENTIALS_BASE64**: Google Sheets API認証情報（手動実行の `draft-news-crawler.yml` のみ。定期クロールはSheetsを使わない）
    ```bash
    # credentials.jsonをbase64エンコード
    base64 -i credentials.json
@@ -57,6 +56,6 @@ python main_new.py
 ```
 ## 出力
 
-- Google Sheets: 記事データとスカウトコメント
+- Supabase: 記事・スカウトコメント・注目度シグナルなど（`crawled_articles` ほか）
 - コンソール: 実行ログと統計情報
 - 

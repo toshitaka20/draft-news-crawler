@@ -37,6 +37,20 @@ def _init_supabase_client(dummy_mode: bool = False) -> Tuple[bool, Optional["Cli
         print("ダミーモードで動作します。")
         return True, None
 
+def _fetch_all_rows(build_query, page_size: int = 1000) -> List[Dict[str, Any]]:
+    """
+    Supabase は1リクエスト最大1000行で打ち切るため、ページングで全件取る。
+    build_query は order 済みのクエリビルダーを毎回新しく返す関数。
+    """
+    rows: List[Dict[str, Any]] = []
+    start = 0
+    while True:
+        page = build_query().range(start, start + page_size - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+        start += page_size
+
 # python-dotenvを使用して.envファイルを読み込む
 try:
     from dotenv import load_dotenv
@@ -107,14 +121,14 @@ class SupabaseCrawledArticleStore:
             return set()
 
         try:
-            response = (
-                self.supabase
+            rows = _fetch_all_rows(
+                lambda: self.supabase
                 .table('crawled_articles')
                 .select('url')
                 .eq('source', source)
-                .execute()
+                .order('id')
             )
-            urls = {row['url'] for row in (response.data or []) if row.get('url')}
+            urls = {row['url'] for row in rows if row.get('url')}
             print(f"[DB] crawled_articles 既存URL数 ({source}): {len(urls)}")
             return urls
         except Exception as e:
@@ -127,13 +141,37 @@ class SupabaseCrawledArticleStore:
             return set()
 
         try:
-            response = self.supabase.table('crawled_articles').select('url').execute()
-            urls = {row['url'] for row in (response.data or []) if row.get('url')}
+            rows = _fetch_all_rows(
+                lambda: self.supabase.table('crawled_articles').select('url').order('id')
+            )
+            urls = {row['url'] for row in rows if row.get('url')}
             print(f"[DB] crawled_articles 既存URL数: {len(urls)}")
             return urls
         except Exception as e:
             print(f"[DB] crawled_articles 既存URL取得エラー: {e}")
             return set()
+
+    def get_recent_articles_by_sources(self, sources: List[str], days: int) -> List[Dict[str, Any]]:
+        """直近 days 日に保存した指定ソースの記事（source/url/title/body）を取得する。"""
+        if self.dummy_mode or self.supabase is None or not sources:
+            print("[DB] crawled_articles 直近記事取得スキップ（ダミーモード）")
+            return []
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        try:
+            rows = _fetch_all_rows(
+                lambda: self.supabase
+                .table('crawled_articles')
+                .select('source,url,title,body')
+                .in_('source', sources)
+                .gte('created_at', cutoff)
+                .order('id')
+            )
+            print(f"[DB] crawled_articles 直近{days}日の記事数: {len(rows)}")
+            return rows
+        except Exception as e:
+            print(f"[DB] crawled_articles 直近記事取得エラー: {e}")
+            return []
 
     def upsert_articles(self, articles: List[Dict[str, Any]]) -> Dict[str, int]:
         if not articles:
@@ -2624,6 +2662,11 @@ def get_existing_crawled_urls(dummy_mode: bool = False) -> Set[str]:
     """crawled_articles から全既存URLを取得"""
     store = SupabaseCrawledArticleStore(dummy_mode=dummy_mode)
     return store.get_existing_urls()
+
+def get_recent_crawled_articles(sources: List[str], days: int, dummy_mode: bool = False) -> List[Dict[str, Any]]:
+    """crawled_articles から直近 days 日の指定ソース記事を取得"""
+    store = SupabaseCrawledArticleStore(dummy_mode=dummy_mode)
+    return store.get_recent_articles_by_sources(sources, days)
 
 def upsert_crawled_articles(articles: List[Dict[str, Any]], dummy_mode: bool = False) -> Dict[str, int]:
     """crawled_articles に記事をupsert"""
